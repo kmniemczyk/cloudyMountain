@@ -6,22 +6,27 @@
 #define CLOUD_1_PIN D3
 #define CLOUD_2_PIN D4
 #define CLOUD_3_PIN D5
-#define HORIZON_PIN D6
+#define HORIZON_PIN D2
+#define STARS_PIN D6
 
 // Number of pixels in each strand
 #define CLOUD_1_PIXELS 32
 #define CLOUD_2_PIXELS 45
 #define CLOUD_3_PIXELS 46
 #define HORIZON_PIXELS 54
+#define STARS_PIXELS 20
 
 // Maximum total brightness across all lit LEDs (power management)
-#define MAX_TOTAL_BRIGHTNESS 750
+#define MAX_TOTAL_BRIGHTNESS 28000 
 
 // Initialize NeoPixel objects (SK6812 GRBW type)
 Adafruit_NeoPixel cloud1 = Adafruit_NeoPixel(CLOUD_1_PIXELS, CLOUD_1_PIN, NEO_GRBW + NEO_KHZ800);
 Adafruit_NeoPixel cloud2 = Adafruit_NeoPixel(CLOUD_2_PIXELS, CLOUD_2_PIN, NEO_GRBW + NEO_KHZ800);
 Adafruit_NeoPixel cloud3 = Adafruit_NeoPixel(CLOUD_3_PIXELS, CLOUD_3_PIN, NEO_GRBW + NEO_KHZ800);
 Adafruit_NeoPixel horizon = Adafruit_NeoPixel(HORIZON_PIXELS, HORIZON_PIN, NEO_GRBW + NEO_KHZ800);
+
+// Stars are simple on/off white LEDs (not addressable)
+bool starsOn = true;  // Default to ON
 
 // Initialize MPR121 touch sensor
 Adafruit_MPR121 touchSensor = Adafruit_MPR121();
@@ -42,12 +47,65 @@ void setup() {
 
   Serial.println("CloudyMountain Initializing...");
 
+  // Initialize I2C bus
+  Wire.begin();
+  delay(100);
+
   // Initialize MPR121 touch sensor
   if (!touchSensor.begin(0x5A)) {
     Serial.println("MPR121 not found, check wiring!");
     while (1);
   }
   Serial.println("MPR121 found!");
+
+  // Stop the sensor before configuring
+  touchSensor.writeRegister(MPR121_ECR, 0x00);
+  delay(10);
+
+  // Soft reset
+  touchSensor.writeRegister(MPR121_SOFTRESET, 0x63);
+  delay(10);
+
+  // Configure MPR121 registers for proper operation
+  // Set baseline filtering control register
+  touchSensor.writeRegister(MPR121_MHDR, 0x01);
+  touchSensor.writeRegister(MPR121_NHDR, 0x01);
+  touchSensor.writeRegister(MPR121_NCLR, 0x0E);
+  touchSensor.writeRegister(MPR121_FDLR, 0x00);
+
+  touchSensor.writeRegister(MPR121_MHDF, 0x01);
+  touchSensor.writeRegister(MPR121_NHDF, 0x05);
+  touchSensor.writeRegister(MPR121_NCLF, 0x01);
+  touchSensor.writeRegister(MPR121_FDLF, 0x00);
+
+  touchSensor.writeRegister(MPR121_NHDT, 0x00);
+  touchSensor.writeRegister(MPR121_NCLT, 0x00);
+  touchSensor.writeRegister(MPR121_FDLT, 0x00);
+
+  // Set debounce
+  touchSensor.writeRegister(MPR121_DEBOUNCE, 0x00);
+
+  // Set config registers - increase charge current for better sensitivity
+  touchSensor.writeRegister(MPR121_CONFIG1, 0x10); // FFI = 6, CDC = 16uA
+  touchSensor.writeRegister(MPR121_CONFIG2, 0x24); // CDT = 0.5uS, ESI = 4ms
+
+  // Auto-configure registers
+  touchSensor.writeRegister(MPR121_AUTOCONFIG0, 0x0B);
+  touchSensor.writeRegister(MPR121_UPLIMIT, 200);
+  touchSensor.writeRegister(MPR121_LOWLIMIT, 130);
+  touchSensor.writeRegister(MPR121_TARGETLIMIT, 180);
+
+  // Set touch and release thresholds for all 12 pads
+  for (uint8_t i = 0; i < 12; i++) {
+    touchSensor.setThresholds(12, 6);  // touch threshold: 12, release threshold: 6
+  }
+
+  // Enable all electrodes - this also runs auto-config
+  touchSensor.writeRegister(MPR121_ECR, 0x8F);  // Start with first 12 electrodes
+
+  delay(200);  // Give it time to stabilize and auto-configure
+
+  Serial.println("MPR121 configured!");
 
   // Initialize all NeoPixel strands
   cloud1.begin();
@@ -61,12 +119,32 @@ void setup() {
   cloud3.show();
   horizon.show();
 
+  // Initialize stars pin as output and turn on by default
+  pinMode(STARS_PIN, OUTPUT);
+  digitalWrite(STARS_PIN, HIGH);  // Turn stars ON by default
+  Serial.println("Stars turned ON");
+
   Serial.println("Setup complete!");
 }
 
 void loop() {
   // Get current touch state from MPR121
   currentTouched = touchSensor.touched();
+
+  // Debug: Print raw touch values every second (commented out after testing)
+  // static unsigned long lastDebugTime = 0;
+  // if (millis() - lastDebugTime > 1000) {
+  //   Serial.print("Touch state: 0x"); Serial.println(currentTouched, HEX);
+  //   // Print filtered data and baseline for first 4 pads
+  //   for (uint8_t i = 0; i < 4; i++) {
+  //     Serial.print("Pad "); Serial.print(i);
+  //     Serial.print(" - Filtered: "); Serial.print(touchSensor.filteredData(i));
+  //     Serial.print(", Baseline: "); Serial.print(touchSensor.baselineData(i));
+  //     Serial.print(", Delta: "); Serial.println(touchSensor.baselineData(i) - touchSensor.filteredData(i));
+  //   }
+  //   Serial.println();
+  //   lastDebugTime = millis();
+  // }
 
   // Check each of the 12 touch pads
   for (uint8_t i = 0; i < 12; i++) {
@@ -92,23 +170,26 @@ void loop() {
 
 // Handle touch events for each pad
 void handleTouch(uint8_t pad) {
+  Serial.print("handleTouch called for pad: ");
+  Serial.println(pad);
+
   // Add your touch handling logic here
   // Example: Light up different strands based on pad number
   switch(pad) {
     case 0:
-      // Example: Set CLOUD_1 to white
+      Serial.println("Setting CLOUD_1 to white");
       setStrandColor(cloud1, 255, 255, 255, 255);
       break;
     case 1:
-      // Example: Set CLOUD_2 to white
+      Serial.println("Setting CLOUD_2 to white");
       setStrandColor(cloud2, 255, 255, 255, 255);
       break;
     case 2:
-      // Example: Set CLOUD_3 to white
+      Serial.println("Setting CLOUD_3 to white");
       setStrandColor(cloud3, 255, 255, 255, 255);
       break;
     case 3:
-      // Example: Set HORIZON to white
+      Serial.println("Setting HORIZON to white");
       setStrandColor(horizon, 255, 255, 255, 255);
       break;
     default:
@@ -193,60 +274,38 @@ void applyBrightnessLimit() {
   }
 }
 
+// Apply brightness scaling to a single strand
+void applyBrightnessToStrand(Adafruit_NeoPixel &strand, float scale) {
+  for (int i = 0; i < strand.numPixels(); i++) {
+    uint32_t color = strand.getPixelColor(i);
+    uint8_t g = ((color >> 24) & 0xFF) * scale;
+    uint8_t r = ((color >> 16) & 0xFF) * scale;
+    uint8_t b = ((color >> 8) & 0xFF) * scale;
+    uint8_t w = (color & 0xFF) * scale;
+    strand.setPixelColor(i, strand.Color(g, r, b, w));
+  }
+}
+
 // Helper function to set entire strand to one color
 void setStrandColor(Adafruit_NeoPixel &strand, uint8_t green, uint8_t red, uint8_t blue, uint8_t white) {
   for (int i = 0; i < strand.numPixels(); i++) {
     strand.setPixelColor(i, strand.Color(green, red, blue, white));
   }
-  strand.show();
 
   // After updating, check if we need to scale brightness
   applyBrightnessLimit();
 
-  // If scaling is needed, update all strands with scaled values
+  // If scaling is needed, apply scale to all strands
   if (brightnessScale < 1.0) {
-    // Scale cloud1
-    for (int i = 0; i < cloud1.numPixels(); i++) {
-      uint32_t color = cloud1.getPixelColor(i);
-      uint8_t g = ((color >> 24) & 0xFF) * brightnessScale;
-      uint8_t r = ((color >> 16) & 0xFF) * brightnessScale;
-      uint8_t b = ((color >> 8) & 0xFF) * brightnessScale;
-      uint8_t w = (color & 0xFF) * brightnessScale;
-      cloud1.setPixelColor(i, cloud1.Color(g, r, b, w));
-    }
-    cloud1.show();
-
-    // Scale cloud2
-    for (int i = 0; i < cloud2.numPixels(); i++) {
-      uint32_t color = cloud2.getPixelColor(i);
-      uint8_t g = ((color >> 24) & 0xFF) * brightnessScale;
-      uint8_t r = ((color >> 16) & 0xFF) * brightnessScale;
-      uint8_t b = ((color >> 8) & 0xFF) * brightnessScale;
-      uint8_t w = (color & 0xFF) * brightnessScale;
-      cloud2.setPixelColor(i, cloud2.Color(g, r, b, w));
-    }
-    cloud2.show();
-
-    // Scale cloud3
-    for (int i = 0; i < cloud3.numPixels(); i++) {
-      uint32_t color = cloud3.getPixelColor(i);
-      uint8_t g = ((color >> 24) & 0xFF) * brightnessScale;
-      uint8_t r = ((color >> 16) & 0xFF) * brightnessScale;
-      uint8_t b = ((color >> 8) & 0xFF) * brightnessScale;
-      uint8_t w = (color & 0xFF) * brightnessScale;
-      cloud3.setPixelColor(i, cloud3.Color(g, r, b, w));
-    }
-    cloud3.show();
-
-    // Scale horizon
-    for (int i = 0; i < horizon.numPixels(); i++) {
-      uint32_t color = horizon.getPixelColor(i);
-      uint8_t g = ((color >> 24) & 0xFF) * brightnessScale;
-      uint8_t r = ((color >> 16) & 0xFF) * brightnessScale;
-      uint8_t b = ((color >> 8) & 0xFF) * brightnessScale;
-      uint8_t w = (color & 0xFF) * brightnessScale;
-      horizon.setPixelColor(i, horizon.Color(g, r, b, w));
-    }
-    horizon.show();
+    applyBrightnessToStrand(cloud1, brightnessScale);
+    applyBrightnessToStrand(cloud2, brightnessScale);
+    applyBrightnessToStrand(cloud3, brightnessScale);
+    applyBrightnessToStrand(horizon, brightnessScale);
   }
+
+  // Show all strands to keep them in sync
+  cloud1.show();
+  cloud2.show();
+  cloud3.show();
+  horizon.show();
 }
