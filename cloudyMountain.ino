@@ -14,6 +14,9 @@
 #define CLOUD_3_PIXELS 46
 #define HORIZON_PIXELS 54
 
+// Maximum total brightness across all lit LEDs (power management)
+#define MAX_TOTAL_BRIGHTNESS 750
+
 // Initialize NeoPixel objects (SK6812 GRBW type)
 Adafruit_NeoPixel cloud1 = Adafruit_NeoPixel(CLOUD_1_PIXELS, CLOUD_1_PIN, NEO_GRBW + NEO_KHZ800);
 Adafruit_NeoPixel cloud2 = Adafruit_NeoPixel(CLOUD_2_PIXELS, CLOUD_2_PIN, NEO_GRBW + NEO_KHZ800);
@@ -26,6 +29,9 @@ Adafruit_MPR121 touchSensor = Adafruit_MPR121();
 // Variables to track touch state
 uint16_t lastTouched = 0;
 uint16_t currentTouched = 0;
+
+// Global brightness scale factor (0.0 to 1.0)
+float brightnessScale = 1.0;
 
 void setup() {
   // Initialize serial communication for debugging
@@ -133,10 +139,114 @@ void handleRelease(uint8_t pad) {
   }
 }
 
+// Calculate total brightness across all strands
+uint32_t calculateTotalBrightness() {
+  uint32_t total = 0;
+
+  for (int i = 0; i < cloud1.numPixels(); i++) {
+    uint32_t color = cloud1.getPixelColor(i);
+    total += (color >> 24) & 0xFF; // Green
+    total += (color >> 16) & 0xFF; // Red
+    total += (color >> 8) & 0xFF;  // Blue
+    total += color & 0xFF;          // White
+  }
+
+  for (int i = 0; i < cloud2.numPixels(); i++) {
+    uint32_t color = cloud2.getPixelColor(i);
+    total += (color >> 24) & 0xFF;
+    total += (color >> 16) & 0xFF;
+    total += (color >> 8) & 0xFF;
+    total += color & 0xFF;
+  }
+
+  for (int i = 0; i < cloud3.numPixels(); i++) {
+    uint32_t color = cloud3.getPixelColor(i);
+    total += (color >> 24) & 0xFF;
+    total += (color >> 16) & 0xFF;
+    total += (color >> 8) & 0xFF;
+    total += color & 0xFF;
+  }
+
+  for (int i = 0; i < horizon.numPixels(); i++) {
+    uint32_t color = horizon.getPixelColor(i);
+    total += (color >> 24) & 0xFF;
+    total += (color >> 16) & 0xFF;
+    total += (color >> 8) & 0xFF;
+    total += color & 0xFF;
+  }
+
+  return total;
+}
+
+// Apply brightness scaling to all strands
+void applyBrightnessLimit() {
+  uint32_t totalBrightness = calculateTotalBrightness();
+
+  if (totalBrightness > MAX_TOTAL_BRIGHTNESS) {
+    brightnessScale = (float)MAX_TOTAL_BRIGHTNESS / (float)totalBrightness;
+
+    Serial.print("Brightness limit applied: ");
+    Serial.print(brightnessScale * 100);
+    Serial.println("%");
+  } else {
+    brightnessScale = 1.0;
+  }
+}
+
 // Helper function to set entire strand to one color
 void setStrandColor(Adafruit_NeoPixel &strand, uint8_t green, uint8_t red, uint8_t blue, uint8_t white) {
   for (int i = 0; i < strand.numPixels(); i++) {
     strand.setPixelColor(i, strand.Color(green, red, blue, white));
   }
   strand.show();
+
+  // After updating, check if we need to scale brightness
+  applyBrightnessLimit();
+
+  // If scaling is needed, update all strands with scaled values
+  if (brightnessScale < 1.0) {
+    // Scale cloud1
+    for (int i = 0; i < cloud1.numPixels(); i++) {
+      uint32_t color = cloud1.getPixelColor(i);
+      uint8_t g = ((color >> 24) & 0xFF) * brightnessScale;
+      uint8_t r = ((color >> 16) & 0xFF) * brightnessScale;
+      uint8_t b = ((color >> 8) & 0xFF) * brightnessScale;
+      uint8_t w = (color & 0xFF) * brightnessScale;
+      cloud1.setPixelColor(i, cloud1.Color(g, r, b, w));
+    }
+    cloud1.show();
+
+    // Scale cloud2
+    for (int i = 0; i < cloud2.numPixels(); i++) {
+      uint32_t color = cloud2.getPixelColor(i);
+      uint8_t g = ((color >> 24) & 0xFF) * brightnessScale;
+      uint8_t r = ((color >> 16) & 0xFF) * brightnessScale;
+      uint8_t b = ((color >> 8) & 0xFF) * brightnessScale;
+      uint8_t w = (color & 0xFF) * brightnessScale;
+      cloud2.setPixelColor(i, cloud2.Color(g, r, b, w));
+    }
+    cloud2.show();
+
+    // Scale cloud3
+    for (int i = 0; i < cloud3.numPixels(); i++) {
+      uint32_t color = cloud3.getPixelColor(i);
+      uint8_t g = ((color >> 24) & 0xFF) * brightnessScale;
+      uint8_t r = ((color >> 16) & 0xFF) * brightnessScale;
+      uint8_t b = ((color >> 8) & 0xFF) * brightnessScale;
+      uint8_t w = (color & 0xFF) * brightnessScale;
+      cloud3.setPixelColor(i, cloud3.Color(g, r, b, w));
+    }
+    cloud3.show();
+
+    // Scale horizon
+    for (int i = 0; i < horizon.numPixels(); i++) {
+      uint32_t color = horizon.getPixelColor(i);
+      uint8_t g = ((color >> 24) & 0xFF) * brightnessScale;
+      uint8_t r = ((color >> 16) & 0xFF) * brightnessScale;
+      uint8_t b = ((color >> 8) & 0xFF) * brightnessScale;
+      uint8_t w = (color & 0xFF) * brightnessScale;
+      horizon.setPixelColor(i, horizon.Color(g, r, b, w));
+    }
+    horizon.show();
+  }
 }
