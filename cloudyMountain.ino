@@ -17,7 +17,10 @@
 #define STARS_PIXELS 20
 
 // Maximum total brightness across all lit LEDs (power management)
-#define MAX_TOTAL_BRIGHTNESS 28000
+// Calculation: 5V 12A supply, 85% safe usage = 10.2A
+// SK6812RGBW: 80mA per pixel max, 177 pixels = 14.16A theoretical max
+// Safe operation: (10.2A / 14.16A) × 180540 max units = 129989
+#define MAX_TOTAL_BRIGHTNESS 129000  // 72% of theoretical max (10.2A / 14.16A)
 
 // Brightness ramping factors for sunrise/sunset
 #define BRIGHTNESS_MIN_FACTOR 0.125  // 1/8 brightness for night scenes
