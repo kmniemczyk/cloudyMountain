@@ -59,8 +59,8 @@ const ColorGRBW PROGMEM sunsetPalette[16] = {
   {200, 90, 0, 30},    // 11: goldenOrange - Golden orange
   {220, 70, 0, 50},    // 12: goldenYellow - Rich golden
   {240, 50, 0, 80},    // 13: warmYellow - Warm yellow
-  {250, 30, 0, 120},   // 14: paleYellow - Pale yellow
-  {255, 20, 0, 200}    // 15: softWhite - Soft daylight white
+  {200, 40, 10, 180},  // 14: paleYellow - Pale yellow transitioning to white
+  {80, 50, 30, 255}    // 15: softWhite - Soft daylight white (white-dominant)
 };
 
 // Helper function to read color from PROGMEM
@@ -69,6 +69,38 @@ ColorGRBW getPaletteColor(uint8_t index) {
   ColorGRBW color;
   memcpy_P(&color, &sunsetPalette[index], sizeof(ColorGRBW));
   return color;
+}
+
+// Interpolate between palette colors for smooth transitions
+// Takes a float position from 0.0 to 15.0
+// Returns a blended color between the two adjacent palette entries
+ColorGRBW interpolateColor(float position) {
+  // Clamp position to valid range
+  if (position < 0.0) position = 0.0;
+  if (position > 15.0) position = 15.0;
+
+  // Get the two palette indices to blend between
+  uint8_t index1 = (uint8_t)position;  // Floor
+  uint8_t index2 = index1 + 1;
+
+  // Handle edge case at the end of the palette
+  if (index2 > 15) index2 = 15;
+
+  // Calculate blend factor (0.0 to 1.0 between the two colors)
+  float blend = position - (float)index1;
+
+  // Get the two colors
+  ColorGRBW color1 = getPaletteColor(index1);
+  ColorGRBW color2 = getPaletteColor(index2);
+
+  // Linearly interpolate each channel
+  ColorGRBW result;
+  result.g = color1.g + (color2.g - color1.g) * blend;
+  result.r = color1.r + (color2.r - color1.r) * blend;
+  result.b = color1.b + (color2.b - color1.b) * blend;
+  result.w = color1.w + (color2.w - color1.w) * blend;
+
+  return result;
 }
 
 void setup() {
@@ -209,14 +241,26 @@ void handleTouch(uint8_t pad) {
   // Add your touch handling logic here
   // Example: Light up different strands based on pad number
   switch(pad) {
-    case 0:
-      // Reserved for SUNRISE sequence
+    case 0:  // Test interpolation at position 0.0 (nightBlue)
+      {
+        ColorGRBW c = interpolateColor(0.0);
+        setStrandColor(horizon, c.g, c.r, c.b, c.w);
+        Serial.println("Interpolation test: position 0.0 (nightBlue)");
+      }
       break;
-    case 1:
-      // Reserved for DAYTIME mode
+    case 1:  // Test interpolation at position 7.5 (mid-palette blend)
+      {
+        ColorGRBW c = interpolateColor(7.5);
+        setStrandColor(horizon, c.g, c.r, c.b, c.w);
+        Serial.println("Interpolation test: position 7.5 (mid-palette blend)");
+      }
       break;
-    case 2:
-      // Reserved for SUNSET sequence
+    case 2:  // Test interpolation at position 15.0 (softWhite)
+      {
+        ColorGRBW c = interpolateColor(15.0);
+        setStrandColor(horizon, c.g, c.r, c.b, c.w);
+        Serial.println("Interpolation test: position 15.0 (softWhite)");
+      }
       break;
     case 3:
       // Reserved for STORM mode
