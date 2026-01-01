@@ -103,6 +103,29 @@ ColorGRBW interpolateColor(float position) {
   return result;
 }
 
+// State machine for progression sequences
+enum SequenceState {
+  SEQ_OFF,           // Everything off
+  SEQ_DAY,           // Daytime mode
+  SEQ_SUNRISE_PROG   // Sunrise progression (will add more states later)
+};
+
+// State tracking structure
+struct ProgressionState {
+  SequenceState currentSequence;
+  float progressPercent;  // 0.0 to 100.0
+};
+
+// Global progression state
+ProgressionState progState = {SEQ_OFF, 0.0};
+
+// Helper: Convert percentage (0-100%) to palette position (0.0-15.0)
+float percentToPalettePosition(float percent) {
+  if (percent < 0.0) percent = 0.0;
+  if (percent > 100.0) percent = 100.0;
+  return (percent / 100.0) * 15.0;
+}
+
 void setup() {
   // Initialize serial communication for debugging
   Serial.begin(115200);
@@ -241,29 +264,31 @@ void handleTouch(uint8_t pad) {
   // Add your touch handling logic here
   // Example: Light up different strands based on pad number
   switch(pad) {
-    case 0:  // Test interpolation at position 0.0 (nightBlue)
-      {
-        ColorGRBW c = interpolateColor(0.0);
-        setStrandColor(horizon, c.g, c.r, c.b, c.w);
-        Serial.println("Interpolation test: position 0.0 (nightBlue)");
-      }
+    case 0:  // Set progress to 0% (night blue)
+      progState.progressPercent = 0.0;
+      Serial.print("Progress set to: ");
+      Serial.println(progState.progressPercent);
       break;
-    case 1:  // Test interpolation at position 7.5 (mid-palette blend)
-      {
-        ColorGRBW c = interpolateColor(7.5);
-        setStrandColor(horizon, c.g, c.r, c.b, c.w);
-        Serial.println("Interpolation test: position 7.5 (mid-palette blend)");
-      }
+    case 1:  // Set progress to 50% (mid-sunrise)
+      progState.progressPercent = 50.0;
+      Serial.print("Progress set to: ");
+      Serial.println(progState.progressPercent);
       break;
-    case 2:  // Test interpolation at position 15.0 (softWhite)
-      {
-        ColorGRBW c = interpolateColor(15.0);
-        setStrandColor(horizon, c.g, c.r, c.b, c.w);
-        Serial.println("Interpolation test: position 15.0 (softWhite)");
-      }
+    case 2:  // Set progress to 100% (daylight)
+      progState.progressPercent = 100.0;
+      Serial.print("Progress set to: ");
+      Serial.println(progState.progressPercent);
       break;
-    case 3:
-      // Reserved for STORM mode
+    case 3:  // Display current progression on horizon
+      {
+        float palPos = percentToPalettePosition(progState.progressPercent);
+        ColorGRBW c = interpolateColor(palPos);
+        setStrandColor(horizon, c.g, c.r, c.b, c.w);
+        Serial.print("Displaying progression - Percent: ");
+        Serial.print(progState.progressPercent);
+        Serial.print("%, Palette pos: ");
+        Serial.println(palPos);
+      }
       break;
     case 4:
       // Reserved for RESET/OFF
