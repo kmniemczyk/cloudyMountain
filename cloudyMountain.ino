@@ -24,6 +24,7 @@
 #define BRIGHTNESS_MAX_FACTOR 1.0    // Full brightness for day scenes
 
 // Timing constants for progression (using SHORT durations for testing)
+#define TEST_HOLD_DURATION_MS 5000         // 5 seconds for testing (will be 2 minutes in production)
 #define TEST_PROGRESSION_DURATION_MS 10000  // 10 seconds for testing (will be 20 minutes in production)
 
 // Initialize NeoPixel objects (SK6812 GRBW type)
@@ -48,8 +49,10 @@ float brightnessScale = 1.0;
 // Forward declarations
 typedef enum {
   SEQ_OFF,
-  SEQ_DAY,
-  SEQ_SUNRISE_PROG
+  SEQ_SUNRISE_HOLD,  // Hold at night blue before sunrise
+  SEQ_SUNRISE_PROG,  // Sunrise progression
+  SEQ_DAY,           // Daytime mode
+  SEQ_SUNSET_PROG    // Sunset progression (reverse)
 } SequenceState;
 
 // Color structure for GRBW LEDs
@@ -141,12 +144,31 @@ float getBrightnessMultiplier(float percent, SequenceState state) {
   if (percent < 0.0) percent = 0.0;
   if (percent > 100.0) percent = 100.0;
 
-  // For now, just do simple ramping based on percentage
-  // Later we'll add state-specific behavior (SUNRISE_HOLD, etc.)
   float normalizedPercent = percent / 100.0;  // Convert to 0.0-1.0 range
 
-  // Linear interpolation from min to max brightness
-  return BRIGHTNESS_MIN_FACTOR + normalizedPercent * (BRIGHTNESS_MAX_FACTOR - BRIGHTNESS_MIN_FACTOR);
+  // State-specific brightness behavior
+  switch(state) {
+    case SEQ_SUNRISE_HOLD:
+      // Hold at minimum brightness (night blue)
+      return BRIGHTNESS_MIN_FACTOR;
+
+    case SEQ_SUNRISE_PROG:
+      // Ramp from min to max brightness during sunrise
+      return BRIGHTNESS_MIN_FACTOR + normalizedPercent * (BRIGHTNESS_MAX_FACTOR - BRIGHTNESS_MIN_FACTOR);
+
+    case SEQ_SUNSET_PROG:
+      // Ramp from max to min brightness during sunset (reverse of sunrise)
+      return BRIGHTNESS_MAX_FACTOR - normalizedPercent * (BRIGHTNESS_MAX_FACTOR - BRIGHTNESS_MIN_FACTOR);
+
+    case SEQ_DAY:
+      // Full brightness during daytime
+      return BRIGHTNESS_MAX_FACTOR;
+
+    case SEQ_OFF:
+    default:
+      // Default to full brightness
+      return BRIGHTNESS_MAX_FACTOR;
+  }
 }
 
 // Transition to a new sequence state
@@ -168,47 +190,87 @@ void updateProgression() {
 
   unsigned long currentTime = millis();
   unsigned long elapsed = currentTime - progState.phaseStartTime;
+  unsigned long phaseDuration;
 
-  // Calculate progress percentage based on elapsed time
-  progState.progressPercent = ((float)elapsed / (float)TEST_PROGRESSION_DURATION_MS) * 100.0;
-
-  // Clamp to 100% max
-  if (progState.progressPercent >= 100.0) {
-    progState.progressPercent = 100.0;
-    progState.isAnimating = false;  // Stop when we reach 100%
-
-    Serial.println("Progression complete!");
+  // Determine phase duration based on current state
+  switch(progState.currentSequence) {
+    case SEQ_SUNRISE_HOLD:
+      phaseDuration = TEST_HOLD_DURATION_MS;
+      break;
+    case SEQ_SUNRISE_PROG:
+    case SEQ_SUNSET_PROG:
+      phaseDuration = TEST_PROGRESSION_DURATION_MS;
+      break;
+    default:
+      phaseDuration = TEST_PROGRESSION_DURATION_MS;
+      break;
   }
 
-  // Calculate palette position and color
-  float palPos = percentToPalettePosition(progState.progressPercent);
-  ColorGRBW c = interpolateColor(palPos);
+  // Calculate progress percentage based on elapsed time
+  progState.progressPercent = ((float)elapsed / (float)phaseDuration) * 100.0;
+
+  // Check if phase is complete and handle transitions
+  if (progState.progressPercent >= 100.0) {
+    progState.progressPercent = 100.0;
+
+    // Auto-transition to next phase based on current state
+    switch(progState.currentSequence) {
+      case SEQ_SUNRISE_HOLD:
+        Serial.println("Hold complete! Starting sunrise progression...");
+        transitionToSequence(SEQ_SUNRISE_PROG);
+        return;  // Exit and let next loop iteration handle the new state
+
+      case SEQ_SUNRISE_PROG:
+        Serial.println("Sunrise progression complete! Transitioning to DAY mode...");
+        transitionToSequence(SEQ_DAY);
+        return;  // Exit and let next loop iteration handle the new state
+
+      case SEQ_SUNSET_PROG:
+        Serial.println("Sunset progression complete! Ending at night blue...");
+        progState.isAnimating = false;
+        break;
+
+      case SEQ_DAY:
+        // DAY mode is static - just stop animating
+        progState.isAnimating = false;
+        Serial.println("DAY mode active (static).");
+        break;
+
+      default:
+        progState.isAnimating = false;
+        Serial.println("Sequence complete!");
+        break;
+    }
+  }
+
+  // Calculate color based on current state
+  float palPos;
+  ColorGRBW c;
+
+  if (progState.currentSequence == SEQ_SUNRISE_HOLD) {
+    // Hold at night blue (palette position 0.0)
+    palPos = 0.0;
+    c = interpolateColor(palPos);
+  } else if (progState.currentSequence == SEQ_SUNRISE_PROG) {
+    // Progress through palette based on percentage (0% → 100% = palette 0.0 → 15.0)
+    palPos = percentToPalettePosition(progState.progressPercent);
+    c = interpolateColor(palPos);
+  } else if (progState.currentSequence == SEQ_SUNSET_PROG) {
+    // Reverse progress through palette (0% → 100% = palette 15.0 → 0.0)
+    palPos = percentToPalettePosition(100.0 - progState.progressPercent);
+    c = interpolateColor(palPos);
+  } else if (progState.currentSequence == SEQ_DAY) {
+    // Full daylight (palette position 15.0)
+    palPos = 15.0;
+    c = interpolateColor(palPos);
+  } else {
+    // Default to night blue
+    palPos = 0.0;
+    c = interpolateColor(palPos);
+  }
 
   // Apply brightness multiplier
   float brightMult = getBrightnessMultiplier(progState.progressPercent, progState.currentSequence);
-
-  // Debug output every 10% of progression (commented out after testing)
-  // static uint8_t lastReportedPercent = 255;
-  // uint8_t currentPercentInt = (uint8_t)progState.progressPercent;
-  // if (currentPercentInt / 10 != lastReportedPercent / 10) {
-  //   Serial.print("Progress: ");
-  //   Serial.print(progState.progressPercent);
-  //   Serial.print("% | Palette pos: ");
-  //   Serial.print(palPos);
-  //   Serial.print(" | Color (GRBW): ");
-  //   Serial.print(c.g); Serial.print(",");
-  //   Serial.print(c.r); Serial.print(",");
-  //   Serial.print(c.b); Serial.print(",");
-  //   Serial.print(c.w);
-  //   Serial.print(" | Brightness mult: ");
-  //   Serial.print(brightMult);
-  //   Serial.print(" | Final (GRBW): ");
-  //   Serial.print((uint8_t)(c.g * brightMult)); Serial.print(",");
-  //   Serial.print((uint8_t)(c.r * brightMult)); Serial.print(",");
-  //   Serial.print((uint8_t)(c.b * brightMult)); Serial.print(",");
-  //   Serial.println((uint8_t)(c.w * brightMult));
-  //   lastReportedPercent = currentPercentInt;
-  // }
 
   // Update the horizon strand with the current color and brightness
   setStrandColor(horizon, c.g * brightMult, c.r * brightMult, c.b * brightMult, c.w * brightMult);
@@ -357,19 +419,16 @@ void handleTouch(uint8_t pad) {
   // Add your touch handling logic here
   // Example: Light up different strands based on pad number
   switch(pad) {
-    case 0:  // Start automatic 10-second sunrise progression
-      Serial.println("Starting automatic sunrise progression (10 seconds)");
-      transitionToSequence(SEQ_SUNRISE_PROG);
+    case 0:  // Start full sunrise sequence (5s hold + 10s progression)
+      Serial.println("Starting full sunrise sequence (5s hold + 10s progression)");
+      transitionToSequence(SEQ_SUNRISE_HOLD);
       break;
-    case 1:  // Set progress to 50% (mid-sunrise)
-      progState.progressPercent = 50.0;
-      Serial.print("Progress set to: ");
-      Serial.println(progState.progressPercent);
+    case 1:  // Reserved for DAYTIME mode (will implement later)
+      Serial.println("DAYTIME mode - not yet implemented");
       break;
-    case 2:  // Set progress to 100% (daylight)
-      progState.progressPercent = 100.0;
-      Serial.print("Progress set to: ");
-      Serial.println(progState.progressPercent);
+    case 2:  // Start sunset sequence (10s progression from day to night)
+      Serial.println("Starting sunset sequence (10s progression)");
+      transitionToSequence(SEQ_SUNSET_PROG);
       break;
     case 3:  // Display current progression with brightness multiplier
       {
@@ -389,8 +448,21 @@ void handleTouch(uint8_t pad) {
         Serial.println(brightMult);
       }
       break;
-    case 4:
-      // Reserved for RESET/OFF
+    case 4:  // RESET/OFF - Turn everything off and reset state
+      Serial.println("RESET/OFF - Turning off all LEDs and stopping sequences");
+
+      // Stop any running sequences
+      progState.isAnimating = false;
+      progState.currentSequence = SEQ_OFF;
+      progState.progressPercent = 0.0;
+
+      // Turn off all LED strands
+      setStrandColor(cloud1, 0, 0, 0, 0);
+      setStrandColor(cloud2, 0, 0, 0, 0);
+      setStrandColor(cloud3, 0, 0, 0, 0);
+      setStrandColor(horizon, 0, 0, 0, 0);
+
+      Serial.println("All LEDs off, state reset to SEQ_OFF");
       break;
     case 5:  // Was case 0 - Test function
       Serial.println("Setting CLOUD_1 to white");
