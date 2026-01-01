@@ -17,7 +17,14 @@
 #define STARS_PIXELS 20
 
 // Maximum total brightness across all lit LEDs (power management)
-#define MAX_TOTAL_BRIGHTNESS 28000 
+#define MAX_TOTAL_BRIGHTNESS 28000
+
+// Brightness ramping factors for sunrise/sunset
+#define BRIGHTNESS_MIN_FACTOR 0.125  // 1/8 brightness for night scenes
+#define BRIGHTNESS_MAX_FACTOR 1.0    // Full brightness for day scenes
+
+// Timing constants for progression (using SHORT durations for testing)
+#define TEST_PROGRESSION_DURATION_MS 10000  // 10 seconds for testing (will be 20 minutes in production)
 
 // Initialize NeoPixel objects (SK6812 GRBW type)
 Adafruit_NeoPixel cloud1 = Adafruit_NeoPixel(CLOUD_1_PIXELS, CLOUD_1_PIN, NEO_GRBW + NEO_KHZ800);
@@ -37,6 +44,13 @@ uint16_t currentTouched = 0;
 
 // Global brightness scale factor (0.0 to 1.0)
 float brightnessScale = 1.0;
+
+// Forward declarations
+typedef enum {
+  SEQ_OFF,
+  SEQ_DAY,
+  SEQ_SUNRISE_PROG
+} SequenceState;
 
 // Color structure for GRBW LEDs
 struct ColorGRBW {
@@ -103,27 +117,78 @@ ColorGRBW interpolateColor(float position) {
   return result;
 }
 
-// State machine for progression sequences
-enum SequenceState {
-  SEQ_OFF,           // Everything off
-  SEQ_DAY,           // Daytime mode
-  SEQ_SUNRISE_PROG   // Sunrise progression (will add more states later)
-};
-
 // State tracking structure
 struct ProgressionState {
   SequenceState currentSequence;
-  float progressPercent;  // 0.0 to 100.0
+  float progressPercent;         // 0.0 to 100.0
+  unsigned long phaseStartTime;  // When current phase started (millis)
+  bool isAnimating;              // Whether progression is active
 };
 
 // Global progression state
-ProgressionState progState = {SEQ_OFF, 0.0};
+ProgressionState progState = {SEQ_OFF, 0.0, 0, false};
 
 // Helper: Convert percentage (0-100%) to palette position (0.0-15.0)
 float percentToPalettePosition(float percent) {
   if (percent < 0.0) percent = 0.0;
   if (percent > 100.0) percent = 100.0;
   return (percent / 100.0) * 15.0;
+}
+
+// Calculate brightness multiplier based on progression percentage and state
+// Returns a value between BRIGHTNESS_MIN_FACTOR (0.125) and BRIGHTNESS_MAX_FACTOR (1.0)
+float getBrightnessMultiplier(float percent, SequenceState state) {
+  if (percent < 0.0) percent = 0.0;
+  if (percent > 100.0) percent = 100.0;
+
+  // For now, just do simple ramping based on percentage
+  // Later we'll add state-specific behavior (SUNRISE_HOLD, etc.)
+  float normalizedPercent = percent / 100.0;  // Convert to 0.0-1.0 range
+
+  // Linear interpolation from min to max brightness
+  return BRIGHTNESS_MIN_FACTOR + normalizedPercent * (BRIGHTNESS_MAX_FACTOR - BRIGHTNESS_MIN_FACTOR);
+}
+
+// Transition to a new sequence state
+void transitionToSequence(SequenceState newState) {
+  progState.currentSequence = newState;
+  progState.phaseStartTime = millis();
+  progState.progressPercent = 0.0;
+  progState.isAnimating = true;
+
+  Serial.print("Transitioning to sequence: ");
+  Serial.println(newState);
+}
+
+// Update the progression based on elapsed time
+void updateProgression() {
+  if (!progState.isAnimating) {
+    return;  // Nothing to do if not animating
+  }
+
+  unsigned long currentTime = millis();
+  unsigned long elapsed = currentTime - progState.phaseStartTime;
+
+  // Calculate progress percentage based on elapsed time
+  progState.progressPercent = ((float)elapsed / (float)TEST_PROGRESSION_DURATION_MS) * 100.0;
+
+  // Clamp to 100% max
+  if (progState.progressPercent >= 100.0) {
+    progState.progressPercent = 100.0;
+    progState.isAnimating = false;  // Stop when we reach 100%
+
+    Serial.println("Progression complete!");
+  }
+
+  // Calculate palette position and color
+  float palPos = percentToPalettePosition(progState.progressPercent);
+  ColorGRBW c = interpolateColor(palPos);
+
+  // Apply brightness multiplier
+  float brightMult = getBrightnessMultiplier(progState.progressPercent, progState.currentSequence);
+
+  // Update the horizon strand with the current color and brightness
+  setStrandColor(horizon, c.g * brightMult, c.r * brightMult, c.b * brightMult, c.w * brightMult);
 }
 
 void setup() {
@@ -252,6 +317,11 @@ void loop() {
   // Update last touch state
   lastTouched = currentTouched;
 
+  // Update progression if animating
+  if (progState.isAnimating) {
+    updateProgression();
+  }
+
   // Small delay to avoid overwhelming the serial output
   delay(10);
 }
@@ -264,10 +334,9 @@ void handleTouch(uint8_t pad) {
   // Add your touch handling logic here
   // Example: Light up different strands based on pad number
   switch(pad) {
-    case 0:  // Set progress to 0% (night blue)
-      progState.progressPercent = 0.0;
-      Serial.print("Progress set to: ");
-      Serial.println(progState.progressPercent);
+    case 0:  // Start automatic 10-second sunrise progression
+      Serial.println("Starting automatic sunrise progression (10 seconds)");
+      transitionToSequence(SEQ_SUNRISE_PROG);
       break;
     case 1:  // Set progress to 50% (mid-sunrise)
       progState.progressPercent = 50.0;
@@ -279,15 +348,22 @@ void handleTouch(uint8_t pad) {
       Serial.print("Progress set to: ");
       Serial.println(progState.progressPercent);
       break;
-    case 3:  // Display current progression on horizon
+    case 3:  // Display current progression with brightness multiplier
       {
         float palPos = percentToPalettePosition(progState.progressPercent);
         ColorGRBW c = interpolateColor(palPos);
-        setStrandColor(horizon, c.g, c.r, c.b, c.w);
+
+        // Apply brightness multiplier based on progression
+        float brightMult = getBrightnessMultiplier(progState.progressPercent, progState.currentSequence);
+
+        setStrandColor(horizon, c.g * brightMult, c.r * brightMult, c.b * brightMult, c.w * brightMult);
+
         Serial.print("Displaying progression - Percent: ");
         Serial.print(progState.progressPercent);
         Serial.print("%, Palette pos: ");
-        Serial.println(palPos);
+        Serial.print(palPos);
+        Serial.print(", Brightness mult: ");
+        Serial.println(brightMult);
       }
       break;
     case 4:
