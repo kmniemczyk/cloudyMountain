@@ -4,9 +4,25 @@ cloudyMountain.ino:143-179 - calculateTotalBrightness() sums up all GRBW values 
 cloudyMountain.ino:182-194 - applyBrightnessLimit() calculates if scaling is needed
 cloudyMountain.ino:197-252 - setStrandColor() automatically enforces the limit
 Key features:
-When total brightness exceeds 750, all LEDs are scaled down proportionally
+When total brightness exceeds 28, all LEDs are scaled down proportionally
 Color ratios are preserved (colors don't shift)
 Works automatically - you don't need to think about it
 Serial monitor shows the scaling percentage when limiting occurs
 Won't interfere with animations or other effects you add later - it applies uniformly to all pixels
 Example: If you set all pixels to white (255,255,255,255 = 1020 per pixel), the system would detect the total exceeds 750 and automatically scale everything down to stay within your power budget. You can adjust MAX_TOTAL_BRIGHTNESS at any time if you find 750 is too restrictive or too generous for your power supply.
+Hardware Configuration:
+Changed HORIZON pin from D6 → D2
+Added STARS strand on D6 (20 simple on/off white LEDs)
+Power Management:
+Increased MAX_TOTAL_BRIGHTNESS from 750 → 28,000 (to match your 12A power supply capacity)
+MPR121 Touch Sensor:
+Added explicit I2C bus initialization (Wire.begin())
+Added comprehensive MPR121 register configuration (soft reset, baseline filtering, auto-config)
+Improved touch sensitivity with proper thresholds
+Added debug output (currently commented out)
+Code Improvements:
+Refactored brightness scaling into applyBrightnessToStrand() helper function
+Changed setStrandColor() to show all strands in sync (prevents flickering)
+Added more debug serial output in touch handlers
+Stars Control:
+Added stars pin initialization and default ON state

@@ -38,6 +38,39 @@ uint16_t currentTouched = 0;
 // Global brightness scale factor (0.0 to 1.0)
 float brightnessScale = 1.0;
 
+// Color structure for GRBW LEDs
+struct ColorGRBW {
+  uint8_t g, r, b, w;
+};
+
+// 16-color sunset/sunrise palette stored in PROGMEM to save SRAM
+const ColorGRBW PROGMEM sunsetPalette[16] = {
+  {0, 0, 80, 0},       // 0: nightBlue - Deep night sky
+  {10, 15, 60, 0},     // 1: darkIndigo - Pre-dawn darkness
+  {25, 35, 70, 0},     // 2: deepPurple - Early morning twilight
+  {40, 60, 60, 0},     // 3: twilightPurple - Dawn purple
+  {60, 80, 40, 0},     // 4: lavender - Light purple dawn
+  {80, 100, 30, 0},    // 5: deepRose - Rose dawn
+  {100, 120, 20, 0},   // 6: rosePink - Pink sunrise
+  {120, 130, 10, 0},   // 7: warmPink - Warm pink
+  {140, 140, 5, 0},    // 8: peach - Peachy glow
+  {160, 130, 0, 10},   // 9: deepOrange - Deep orange with hint of white
+  {180, 110, 0, 20},   // 10: orange - Bright orange
+  {200, 90, 0, 30},    // 11: goldenOrange - Golden orange
+  {220, 70, 0, 50},    // 12: goldenYellow - Rich golden
+  {240, 50, 0, 80},    // 13: warmYellow - Warm yellow
+  {250, 30, 0, 120},   // 14: paleYellow - Pale yellow
+  {255, 20, 0, 200}    // 15: softWhite - Soft daylight white
+};
+
+// Helper function to read color from PROGMEM
+ColorGRBW getPaletteColor(uint8_t index) {
+  if (index > 15) index = 15;  // Clamp to valid range
+  ColorGRBW color;
+  memcpy_P(&color, &sunsetPalette[index], sizeof(ColorGRBW));
+  return color;
+}
+
 void setup() {
   // Initialize serial communication for debugging
   Serial.begin(115200);
@@ -177,20 +210,45 @@ void handleTouch(uint8_t pad) {
   // Example: Light up different strands based on pad number
   switch(pad) {
     case 0:
+      // Reserved for SUNRISE sequence
+      break;
+    case 1:
+      // Reserved for DAYTIME mode
+      break;
+    case 2:
+      // Reserved for SUNSET sequence
+      break;
+    case 3:
+      // Reserved for STORM mode
+      break;
+    case 4:
+      // Reserved for RESET/OFF
+      break;
+    case 5:  // Was case 0 - Test function
       Serial.println("Setting CLOUD_1 to white");
       setStrandColor(cloud1, 255, 255, 255, 255);
       break;
-    case 1:
+    case 6:  // Was case 1 - Test function
       Serial.println("Setting CLOUD_2 to white");
       setStrandColor(cloud2, 255, 255, 255, 255);
       break;
-    case 2:
-      Serial.println("Setting CLOUD_3 to white");
-      setStrandColor(cloud3, 255, 255, 255, 255);
+    case 7:  // Palette test - cycles through all 16 colors
+      {
+        static uint8_t testColorIndex = 0;
+        ColorGRBW c = getPaletteColor(testColorIndex);
+        setStrandColor(horizon, c.g, c.r, c.b, c.w);
+        Serial.print("Palette color index: ");
+        Serial.println(testColorIndex);
+        testColorIndex = (testColorIndex + 1) % 16;  // Cycle through palette
+      }
       break;
-    case 3:
+    case 8:  // Was case 3 - Test function
       Serial.println("Setting HORIZON to white");
       setStrandColor(horizon, 255, 255, 255, 255);
+      break;
+    case 9:  // Was case 2 - Test function
+      Serial.println("Setting CLOUD_3 to white");
+      setStrandColor(cloud3, 255, 255, 255, 255);
       break;
     default:
       // Handle other pads
@@ -204,16 +262,33 @@ void handleRelease(uint8_t pad) {
   // Example: Turn off the strand when pad is released
   switch(pad) {
     case 0:
-      setStrandColor(cloud1, 0, 0, 0, 0);
+      // Reserved for SUNRISE sequence
       break;
     case 1:
-      setStrandColor(cloud2, 0, 0, 0, 0);
+      // Reserved for DAYTIME mode
       break;
     case 2:
-      setStrandColor(cloud3, 0, 0, 0, 0);
+      // Reserved for SUNSET sequence
       break;
     case 3:
+      // Reserved for STORM mode
+      break;
+    case 4:
+      // Reserved for RESET/OFF
+      break;
+    case 5:  // Was case 0 - Test function
+      setStrandColor(cloud1, 0, 0, 0, 0);
+      break;
+    case 6:  // Was case 1 - Test function
+      setStrandColor(cloud2, 0, 0, 0, 0);
+      break;
+    case 7:  // Palette test - no release action needed
+      break;
+    case 8:  // Was case 3 - Test function
       setStrandColor(horizon, 0, 0, 0, 0);
+      break;
+    case 9:  // Was case 2 - Test function
+      setStrandColor(cloud3, 0, 0, 0, 0);
       break;
     default:
       break;
