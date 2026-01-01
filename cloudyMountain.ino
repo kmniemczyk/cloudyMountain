@@ -23,9 +23,9 @@
 #define BRIGHTNESS_MIN_FACTOR 0.125  // 1/8 brightness for night scenes
 #define BRIGHTNESS_MAX_FACTOR 1.0    // Full brightness for day scenes
 
-// Timing constants for progression (using SHORT durations for testing)
-#define TEST_HOLD_DURATION_MS 5000         // 5 seconds for testing (will be 2 minutes in production)
-#define TEST_PROGRESSION_DURATION_MS 10000  // 10 seconds for testing (will be 20 minutes in production)
+// Timing constants for progression (PRODUCTION durations)
+#define SUNRISE_HOLD_DURATION_MS 120000      // 2 minutes night blue hold
+#define PROGRESSION_DURATION_MS 1200000      // 20 minutes sunrise/sunset progression
 
 // Initialize NeoPixel objects (SK6812 GRBW type)
 Adafruit_NeoPixel cloud1 = Adafruit_NeoPixel(CLOUD_1_PIXELS, CLOUD_1_PIN, NEO_GRBW + NEO_KHZ800);
@@ -195,14 +195,14 @@ void updateProgression() {
   // Determine phase duration based on current state
   switch(progState.currentSequence) {
     case SEQ_SUNRISE_HOLD:
-      phaseDuration = TEST_HOLD_DURATION_MS;
+      phaseDuration = SUNRISE_HOLD_DURATION_MS;
       break;
     case SEQ_SUNRISE_PROG:
     case SEQ_SUNSET_PROG:
-      phaseDuration = TEST_PROGRESSION_DURATION_MS;
+      phaseDuration = PROGRESSION_DURATION_MS;
       break;
     default:
-      phaseDuration = TEST_PROGRESSION_DURATION_MS;
+      phaseDuration = PROGRESSION_DURATION_MS;
       break;
   }
 
@@ -419,15 +419,15 @@ void handleTouch(uint8_t pad) {
   // Add your touch handling logic here
   // Example: Light up different strands based on pad number
   switch(pad) {
-    case 0:  // Start full sunrise sequence (5s hold + 10s progression)
-      Serial.println("Starting full sunrise sequence (5s hold + 10s progression)");
+    case 0:  // Start full sunrise sequence (2min hold + 20min progression)
+      Serial.println("Starting full sunrise sequence (2min hold + 20min progression)");
       transitionToSequence(SEQ_SUNRISE_HOLD);
       break;
     case 1:  // Reserved for DAYTIME mode (will implement later)
       Serial.println("DAYTIME mode - not yet implemented");
       break;
-    case 2:  // Start sunset sequence (10s progression from day to night)
-      Serial.println("Starting sunset sequence (10s progression)");
+    case 2:  // Start sunset sequence (20min progression from day to night)
+      Serial.println("Starting sunset sequence (20min progression)");
       transitionToSequence(SEQ_SUNSET_PROG);
       break;
     case 3:  // Display current progression with brightness multiplier
