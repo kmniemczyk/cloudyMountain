@@ -187,6 +187,29 @@ void updateProgression() {
   // Apply brightness multiplier
   float brightMult = getBrightnessMultiplier(progState.progressPercent, progState.currentSequence);
 
+  // Debug output every 10% of progression (commented out after testing)
+  // static uint8_t lastReportedPercent = 255;
+  // uint8_t currentPercentInt = (uint8_t)progState.progressPercent;
+  // if (currentPercentInt / 10 != lastReportedPercent / 10) {
+  //   Serial.print("Progress: ");
+  //   Serial.print(progState.progressPercent);
+  //   Serial.print("% | Palette pos: ");
+  //   Serial.print(palPos);
+  //   Serial.print(" | Color (GRBW): ");
+  //   Serial.print(c.g); Serial.print(",");
+  //   Serial.print(c.r); Serial.print(",");
+  //   Serial.print(c.b); Serial.print(",");
+  //   Serial.print(c.w);
+  //   Serial.print(" | Brightness mult: ");
+  //   Serial.print(brightMult);
+  //   Serial.print(" | Final (GRBW): ");
+  //   Serial.print((uint8_t)(c.g * brightMult)); Serial.print(",");
+  //   Serial.print((uint8_t)(c.r * brightMult)); Serial.print(",");
+  //   Serial.print((uint8_t)(c.b * brightMult)); Serial.print(",");
+  //   Serial.println((uint8_t)(c.w * brightMult));
+  //   lastReportedPercent = currentPercentInt;
+  // }
+
   // Update the horizon strand with the current color and brightness
   setStrandColor(horizon, c.g * brightMult, c.r * brightMult, c.b * brightMult, c.w * brightMult);
 }
