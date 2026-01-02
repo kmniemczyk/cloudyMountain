@@ -1,4 +1,4 @@
-//HORIZON ONLY
+//HORIZON ONLYa
 
 #include <Wire.h>
 #include <Adafruit_MPR121.h>
@@ -135,6 +135,80 @@ const ColorGRBW PROGMEM sunsetPalette[32] = {
 {108, 60, 244, 208} //32
 };
 
+// NEW: Cloud background palette (32 colors, different from horizon)
+// User-provided palette for cloud background progression
+const ColorGRBW PROGMEM cloudBackgroundPalette[32] = {
+  {10, 12, 60, 0},    // 1
+  {12, 14, 58, 0},    // 2
+  {14, 16, 56, 0},    // 3
+  {16, 18, 54, 0},    // 4
+  {18, 20, 52, 0},    // 5
+  {20, 22, 52, 0},    // 6
+  {24, 26, 54, 0},    // 7
+  {30, 30, 56, 0},    // 8
+  {36, 36, 58, 0},    // 9
+  {44, 44, 60, 0},    // 10
+  {56, 56, 58, 1},    // 11
+  {72, 72, 56, 1},    // 12
+  {92, 86, 54, 2},    // 13
+  {110, 100, 52, 2},  // 14
+  {128, 116, 50, 3},  // 15
+  {150, 136, 50, 4},  // 16
+  {170, 150, 54, 6},  // 17
+  {184, 162, 64, 8},  // 18
+  {196, 174, 84, 10}, // 19
+  {204, 180, 106, 12},// 20
+  {208, 178, 128, 16},// 21
+  {204, 170, 150, 20},// 22
+  {196, 160, 170, 28},// 23
+  {184, 148, 186, 36},// 24
+  {168, 132, 196, 44},// 25
+  {152, 116, 204, 56},// 26
+  {136, 100, 210, 68},// 27
+  {122, 86, 214, 84}, // 28
+  {110, 76, 218, 100},// 29
+  {100, 70, 222, 116},// 30
+  {96, 66, 234, 160}, // 31
+  {240, 240, 240, 220}// 32
+};
+
+// NEW: Highlight patch palette (32 colors, progresses to white)
+// User-provided palette for highlight patches
+const ColorGRBW PROGMEM highlightPalette[32] = {
+  {40, 8, 20, 0},     // 1
+  {48, 12, 24, 0},    // 2
+  {60, 16, 28, 0},    // 3
+  {72, 20, 34, 0},    // 4
+  {88, 24, 40, 0},    // 5
+  {100, 28, 44, 0},   // 6
+  {120, 36, 50, 1},   // 7
+  {140, 40, 54, 1},   // 8
+  {160, 48, 58, 2},   // 9
+  {180, 60, 62, 3},   // 10
+  {200, 80, 60, 4},   // 11
+  {220, 100, 50, 4},  // 12
+  {235, 120, 44, 6},  // 13
+  {245, 140, 42, 8},  // 14
+  {250, 160, 44, 10}, // 15
+  {252, 180, 56, 12}, // 16
+  {252, 196, 78, 14}, // 17
+  {252, 206, 100, 18},// 18
+  {252, 214, 122, 22},// 19
+  {252, 214, 148, 28},// 20
+  {252, 208, 176, 36},// 21
+  {250, 200, 196, 44},// 22
+  {244, 190, 212, 56},// 23
+  {236, 178, 224, 68},// 24
+  {220, 160, 232, 84},// 25
+  {200, 140, 236, 100},// 26
+  {180, 120, 238, 116},// 27
+  {160, 100, 240, 132},// 28
+  {140, 86, 242, 148}, // 29
+  {124, 74, 244, 164}, // 30
+  {112, 66, 246, 188}, // 31
+  {255, 255, 255, 255} // 32
+};
+
 // Helper function to read color from PROGMEM
 ColorGRBW getPaletteColor(uint8_t index) {
   if (index > 31) index = 31;  // Clamp to 32-color range
@@ -175,6 +249,82 @@ ColorGRBW interpolateColor(float position) {
   return result;
 }
 
+// NEW: Get color from cloud background palette
+ColorGRBW getCloudBackgroundColor(uint8_t index) {
+  if (index > 31) index = 31;  // Clamp to 32-color range
+  ColorGRBW color;
+  memcpy_P(&color, &cloudBackgroundPalette[index], sizeof(ColorGRBW));
+  return color;
+}
+
+// NEW: Get color from highlight palette
+ColorGRBW getHighlightColor(uint8_t index) {
+  if (index > 31) index = 31;  // Clamp to 32-color range
+  ColorGRBW color;
+  memcpy_P(&color, &highlightPalette[index], sizeof(ColorGRBW));
+  return color;
+}
+
+// NEW: Interpolate cloud background colors
+ColorGRBW interpolateCloudBackground(float position) {
+  // Clamp position to valid range
+  if (position < 0.0) position = 0.0;
+  if (position > 31.0) position = 31.0;
+
+  // Get the two palette indices to blend between
+  uint8_t index1 = (uint8_t)position;  // Floor
+  uint8_t index2 = index1 + 1;
+
+  // Handle edge case at the end of the palette
+  if (index2 > 31) index2 = 31;
+
+  // Calculate blend factor (0.0 to 1.0 between the two colors)
+  float blend = position - (float)index1;
+
+  // Get the two colors from cloud background palette
+  ColorGRBW color1 = getCloudBackgroundColor(index1);
+  ColorGRBW color2 = getCloudBackgroundColor(index2);
+
+  // Linearly interpolate each channel
+  ColorGRBW result;
+  result.g = color1.g + (color2.g - color1.g) * blend;
+  result.r = color1.r + (color2.r - color1.r) * blend;
+  result.b = color1.b + (color2.b - color1.b) * blend;
+  result.w = color1.w + (color2.w - color1.w) * blend;
+
+  return result;
+}
+
+// NEW: Interpolate highlight colors
+ColorGRBW interpolateHighlight(float position) {
+  // Clamp position to valid range
+  if (position < 0.0) position = 0.0;
+  if (position > 31.0) position = 31.0;
+
+  // Get the two palette indices to blend between
+  uint8_t index1 = (uint8_t)position;  // Floor
+  uint8_t index2 = index1 + 1;
+
+  // Handle edge case at the end of the palette
+  if (index2 > 31) index2 = 31;
+
+  // Calculate blend factor (0.0 to 1.0 between the two colors)
+  float blend = position - (float)index1;
+
+  // Get the two colors from highlight palette
+  ColorGRBW color1 = getHighlightColor(index1);
+  ColorGRBW color2 = getHighlightColor(index2);
+
+  // Linearly interpolate each channel
+  ColorGRBW result;
+  result.g = color1.g + (color2.g - color1.g) * blend;
+  result.r = color1.r + (color2.r - color1.r) * blend;
+  result.b = color1.b + (color2.b - color1.b) * blend;
+  result.w = color1.w + (color2.w - color1.w) * blend;
+
+  return result;
+}
+
 // State tracking structure
 struct ProgressionState {
   SequenceState currentSequence;
@@ -185,6 +335,47 @@ struct ProgressionState {
 
 // Global progression state
 ProgressionState progState = {SEQ_OFF, 0.0, 0, false};
+
+// NEW: Patch tracking structure (Step 2)
+struct HighlightPatch {
+  uint8_t startPixel;      // Where patch starts (0 to numPixels-1)
+  uint8_t width;           // How many pixels wide (5-15 pixels)
+  float fadeProgress;      // 0.0 = invisible, 1.0 = full brightness, back to 0.0
+  unsigned long spawnTime; // When this patch was created (millis)
+  bool active;             // Whether this patch is currently alive
+  bool fadingIn;           // True = fading in, False = fading out
+};
+
+// NEW: Cloud state structure (one per cloud strand) (Step 2)
+struct CloudState {
+  HighlightPatch patches[8];     // Max 8 patches per cloud (more than needed)
+  unsigned long nextSpawnTime;   // When to spawn next patch (millis)
+  uint8_t activePatchCount;      // How many patches are currently active
+  uint8_t randomSeed;            // Unique seed for randomization per cloud
+};
+
+// NEW: Global cloud states (one for each cloud strand) (Step 2)
+CloudState cloudState1;
+CloudState cloudState2;
+CloudState cloudState3;
+
+// NEW: Timing constants for patches (Step 2)
+#define PATCH_FADE_DURATION_MS 8000        // 8 seconds to fade in + fade out
+#define PATCH_MIN_SPAWN_INTERVAL_MS 3000   // Minimum 3 seconds between spawns
+#define PATCH_MAX_SPAWN_INTERVAL_MS 10000  // Maximum 10 seconds between spawns
+#define PATCH_MIN_WIDTH 5                  // Minimum patch size
+#define PATCH_MAX_WIDTH 15                 // Maximum patch size
+
+// Forward declarations for cloud patch functions
+uint8_t getMaxPatchesForProgression(float percent);
+void getPatchSpawnRange(float percent, uint8_t numPixels, uint8_t &minPixel, uint8_t &maxPixel);
+void spawnPatch(CloudState &state, uint8_t numPixels);
+void updatePatchSpawning(CloudState &state, uint8_t numPixels);
+void updatePatchFade(HighlightPatch &patch, uint8_t cloudSeed);
+void updateAllPatches(CloudState &state);
+ColorGRBW blendColors(ColorGRBW bg, ColorGRBW patch, float alpha);
+void renderCloudPatches(Adafruit_NeoPixel &strand, CloudState &state, ColorGRBW bgColor);
+void updateCloudBackgrounds();
 
 // Helper: Convert percentage (0-100%) to palette position (0.0-31.0)
 float percentToPalettePosition(float percent) {
@@ -347,6 +538,202 @@ void updateProgression() {
 
   // Update the horizon strand with the current color and brightness
   setStrandColor(horizon, c.g * brightMult, c.r * brightMult, c.b * brightMult, c.w * brightMult);
+
+  // NEW: Update cloud backgrounds (Step 1)
+  updateCloudBackgrounds();
+}
+
+// NEW: Calculate maximum patches allowed based on progression (Step 3)
+uint8_t getMaxPatchesForProgression(float percent) {
+  if (percent < 10.0) return 1;   // 0-10%: Max 1 patch
+  if (percent < 30.0) return 2;   // 10-30%: Max 2 patches
+  if (percent < 50.0) return 3;   // 30-50%: Max 3 patches
+  if (percent < 70.0) return 5;   // 50-70%: Max 5 patches
+  if (percent < 90.0) return 7;   // 70-90%: Max 7 patches
+  return 8;                        // 90-100%: Max 8 patches (all white)
+}
+
+// NEW: Calculate patch spawn pixel range (spreads over time) (Step 3)
+void getPatchSpawnRange(float percent, uint8_t numPixels, uint8_t &minPixel, uint8_t &maxPixel) {
+  if (percent < 20.0) {
+    // Early: Only low pixels (0-20% of strand)
+    minPixel = 0;
+    maxPixel = numPixels * 0.2;
+  } else if (percent < 50.0) {
+    // Mid-early: Low to middle pixels (0-50% of strand)
+    minPixel = 0;
+    maxPixel = numPixels * 0.5;
+  } else if (percent < 80.0) {
+    // Mid-late: Low to high pixels (0-80% of strand)
+    minPixel = 0;
+    maxPixel = numPixels * 0.8;
+  } else {
+    // Late: Entire strand
+    minPixel = 0;
+    maxPixel = numPixels;
+  }
+}
+
+// NEW: Spawn a new patch on a cloud (Step 3)
+void spawnPatch(CloudState &state, uint8_t numPixels) {
+  // Find an inactive patch slot
+  for (int i = 0; i < 8; i++) {
+    if (!state.patches[i].active) {
+      // Get spawn range based on progression
+      uint8_t minPixel, maxPixel;
+      getPatchSpawnRange(progState.progressPercent, numPixels, minPixel, maxPixel);
+
+      // Use seeded random for this cloud
+      uint8_t pixelRange = maxPixel - minPixel;
+      if (pixelRange == 0) pixelRange = 1;
+
+      state.patches[i].startPixel = minPixel + ((millis() + state.randomSeed) % pixelRange);
+      state.patches[i].width = PATCH_MIN_WIDTH + ((millis() + state.randomSeed * 2) % (PATCH_MAX_WIDTH - PATCH_MIN_WIDTH));
+      state.patches[i].fadeProgress = 0.0;
+      state.patches[i].fadingIn = true;
+      state.patches[i].spawnTime = millis();
+      state.patches[i].active = true;
+
+      state.activePatchCount++;
+
+      // Schedule next spawn (randomized timing per cloud)
+      uint32_t spawnInterval = PATCH_MIN_SPAWN_INTERVAL_MS +
+        ((millis() + state.randomSeed * 3) % (PATCH_MAX_SPAWN_INTERVAL_MS - PATCH_MIN_SPAWN_INTERVAL_MS));
+      state.nextSpawnTime = millis() + spawnInterval;
+
+      break; // Only spawn one patch
+    }
+  }
+}
+
+// NEW: Update patch spawning for a cloud (Step 3)
+void updatePatchSpawning(CloudState &state, uint8_t numPixels) {
+  // Check if it's time to spawn and if we haven't hit the limit
+  uint8_t maxPatches = getMaxPatchesForProgression(progState.progressPercent);
+
+  if (millis() >= state.nextSpawnTime && state.activePatchCount < maxPatches) {
+    spawnPatch(state, numPixels);
+  }
+}
+
+// NEW: Update fade progress for a single patch (Step 4)
+void updatePatchFade(HighlightPatch &patch, uint8_t cloudSeed) {
+  if (!patch.active) return;
+
+  unsigned long elapsed = millis() - patch.spawnTime;
+
+  // Use cloud seed to vary fade speed (10% faster/slower per cloud)
+  float fadeSpeedMultiplier = 1.0 + ((cloudSeed % 20) - 10) / 100.0; // 0.9 to 1.1
+  unsigned long adjustedDuration = PATCH_FADE_DURATION_MS / fadeSpeedMultiplier;
+
+  // Half the duration is fade in, half is fade out
+  unsigned long halfDuration = adjustedDuration / 2;
+
+  if (elapsed < halfDuration) {
+    // Fading in
+    patch.fadingIn = true;
+    patch.fadeProgress = (float)elapsed / (float)halfDuration; // 0.0 → 1.0
+  } else if (elapsed < adjustedDuration) {
+    // Fading out
+    patch.fadingIn = false;
+    patch.fadeProgress = 1.0 - ((float)(elapsed - halfDuration) / (float)halfDuration); // 1.0 → 0.0
+  } else {
+    // Patch lifetime complete - deactivate
+    patch.active = false;
+    // Note: activePatchCount will be decremented in updateAllPatches()
+  }
+}
+
+// NEW: Update all patches for a cloud (Step 4)
+void updateAllPatches(CloudState &state) {
+  state.activePatchCount = 0; // Recount active patches
+
+  for (int i = 0; i < 8; i++) {
+    if (state.patches[i].active) {
+      updatePatchFade(state.patches[i], state.randomSeed);
+
+      if (state.patches[i].active) {
+        state.activePatchCount++;
+      }
+    }
+  }
+}
+
+// NEW: Blend two colors with alpha (Step 5)
+// 0.0 = all bg, 1.0 = all patch
+ColorGRBW blendColors(ColorGRBW bg, ColorGRBW patch, float alpha) {
+  ColorGRBW result;
+  result.g = bg.g * (1.0 - alpha) + patch.g * alpha;
+  result.r = bg.r * (1.0 - alpha) + patch.r * alpha;
+  result.b = bg.b * (1.0 - alpha) + patch.b * alpha;
+  result.w = bg.w * (1.0 - alpha) + patch.w * alpha;
+  return result;
+}
+
+// NEW: Render patches on a single cloud strand (Step 5)
+void renderCloudPatches(Adafruit_NeoPixel &strand, CloudState &state, ColorGRBW bgColor) {
+  // First, set all pixels to background
+  for (int i = 0; i < strand.numPixels(); i++) {
+    strand.setPixelColor(i, strand.Color(bgColor.g, bgColor.r, bgColor.b, bgColor.w));
+  }
+
+  // Then, layer patches on top
+  for (int p = 0; p < 8; p++) {
+    if (!state.patches[p].active) continue;
+
+    HighlightPatch &patch = state.patches[p];
+
+    // Get highlight color based on current progression
+    float highlightPalPos = percentToPalettePosition(progState.progressPercent);
+    ColorGRBW highlightColor = interpolateHighlight(highlightPalPos);
+
+    // Draw patch pixels
+    for (int i = 0; i < patch.width; i++) {
+      uint8_t pixelIndex = patch.startPixel + i;
+
+      if (pixelIndex >= strand.numPixels()) break; // Don't overflow
+
+      // Get current pixel color (might already have other patches blended)
+      uint32_t currentColor = strand.getPixelColor(pixelIndex);
+      ColorGRBW current;
+      current.g = (currentColor >> 24) & 0xFF;
+      current.r = (currentColor >> 16) & 0xFF;
+      current.b = (currentColor >> 8) & 0xFF;
+      current.w = currentColor & 0xFF;
+
+      // Blend patch color on top with fade progress as alpha
+      ColorGRBW blended = blendColors(current, highlightColor, patch.fadeProgress);
+
+      strand.setPixelColor(pixelIndex, strand.Color(blended.g, blended.r, blended.b, blended.w));
+    }
+  }
+
+  // Show the strand
+  strand.show();
+}
+
+// NEW: Update cloud background colors and patches (Step 5 - now with patches!)
+void updateCloudBackgrounds() {
+  // Get current palette position from global progState
+  float palPos = percentToPalettePosition(progState.progressPercent);
+
+  // Interpolate color from cloud background palette
+  ColorGRBW bgColor = interpolateCloudBackground(palPos);
+
+  // Apply brightness multiplier (same as horizon)
+  float brightMult = getBrightnessMultiplier(progState.progressPercent, progState.currentSequence);
+
+  // Apply brightness to background color
+  ColorGRBW bgColorWithBrightness;
+  bgColorWithBrightness.g = bgColor.g * brightMult;
+  bgColorWithBrightness.r = bgColor.r * brightMult;
+  bgColorWithBrightness.b = bgColor.b * brightMult;
+  bgColorWithBrightness.w = bgColor.w * brightMult;
+
+  // Render all clouds with background + patches
+  renderCloudPatches(cloud1, cloudState1, bgColorWithBrightness);
+  renderCloudPatches(cloud2, cloudState2, bgColorWithBrightness);
+  renderCloudPatches(cloud3, cloudState3, bgColorWithBrightness);
 }
 
 void setup() {
@@ -434,6 +821,28 @@ void setup() {
   pinMode(STARS_PIN, OUTPUT);
   digitalWrite(STARS_PIN, HIGH);  // Turn stars ON by default
   Serial.println("Stars turned ON");
+
+  // NEW: Initialize cloud states with different random seeds (Step 2)
+  cloudState1.randomSeed = 17;  // Prime numbers for better randomization
+  cloudState2.randomSeed = 31;
+  cloudState3.randomSeed = 47;
+
+  cloudState1.nextSpawnTime = millis() + 1000;  // Cloud 1 spawns first at 1sec
+  cloudState2.nextSpawnTime = millis() + 2500;  // Cloud 2 spawns at 2.5sec
+  cloudState3.nextSpawnTime = millis() + 4000;  // Cloud 3 spawns at 4sec
+
+  cloudState1.activePatchCount = 0;
+  cloudState2.activePatchCount = 0;
+  cloudState3.activePatchCount = 0;
+
+  // Initialize all patches as inactive
+  for (int i = 0; i < 8; i++) {
+    cloudState1.patches[i].active = false;
+    cloudState2.patches[i].active = false;
+    cloudState3.patches[i].active = false;
+  }
+
+  Serial.println("Cloud states initialized");
 
   Serial.println("Setup complete!");
 }
