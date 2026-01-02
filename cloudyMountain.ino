@@ -63,62 +63,93 @@ struct ColorGRBW {
   uint8_t g, r, b, w;
 };
 
-// 24-color sunset/sunrise palette stored in PROGMEM to save SRAM
-// Expanded from 16 to 24 colors to smooth out early blue/purple transitions
-const ColorGRBW PROGMEM sunsetPalette[24] = {
-  // EARLY BLUES/PURPLES (10 colors, 42% of palette) - Extra smoothing in this section
-  {0, 0, 80, 0},        // 0: nightBlue - Deep night sky
-  {5, 8, 72, 0},        // 1: midnight transition - NEW
-  {10, 15, 65, 0},      // 2: darkIndigo - Refined
-  {17, 25, 68, 0},      // 3: early twilight - NEW
-  {25, 35, 65, 0},      // 4: deepPurple - Smoothed
-  {33, 48, 60, 0},      // 5: dawn approach - NEW
-  {40, 60, 55, 0},      // 6: twilightPurple - Smoothed
-  {50, 70, 48, 0},      // 7: light purple - NEW
-  {60, 80, 40, 0},      // 8: lavender
-  {70, 90, 35, 0},      // 9: purple-rose bridge - NEW
+// COMMENTED OUT - Previous 24-color palette
+// const ColorGRBW PROGMEM sunsetPalette_OLD[24] = {
+//   {0, 0, 80, 0},        // 0: nightBlue
+//   {5, 8, 72, 0},        // 1: midnight transition
+//   {10, 15, 65, 0},      // 2: darkIndigo
+//   {17, 25, 68, 0},      // 3: early twilight
+//   {25, 35, 65, 0},      // 4: deepPurple
+//   {33, 48, 60, 0},      // 5: dawn approach
+//   {40, 60, 55, 0},      // 6: twilightPurple
+//   {50, 70, 48, 0},      // 7: light purple
+//   {60, 80, 40, 0},      // 8: lavender
+//   {70, 90, 35, 0},      // 9: purple-rose bridge
+//   {80, 100, 30, 0},     // 10: deepRose
+//   {90, 110, 25, 0},     // 11: rose pink bridge
+//   {100, 120, 20, 0},    // 12: rosePink
+//   {110, 125, 15, 0},    // 13: warm pink transition
+//   {120, 130, 10, 0},    // 14: warmPink
+//   {130, 135, 7, 0},     // 15: peach approach
+//   {140, 140, 5, 0},     // 16: peach
+//   {160, 130, 0, 10},    // 17: deepOrange
+//   {180, 110, 0, 20},    // 18: orange
+//   {200, 90, 0, 30},     // 19: goldenOrange
+//   {220, 70, 0, 50},     // 20: goldenYellow
+//   {240, 50, 0, 80},     // 21: warmYellow
+//   {200, 40, 10, 180},   // 22: paleYellow
+//   {80, 50, 30, 255}     // 23: softWhite
+// };
 
-  // MID PINKS/ORANGES (7 colors, 29% of palette)
-  {80, 100, 30, 0},     // 10: deepRose
-  {90, 110, 25, 0},     // 11: rose pink bridge - NEW
-  {100, 120, 20, 0},    // 12: rosePink
-  {110, 125, 15, 0},    // 13: warm pink transition - NEW
-  {120, 130, 10, 0},    // 14: warmPink
-  {130, 135, 7, 0},     // 15: peach approach - NEW
-  {140, 140, 5, 0},     // 16: peach
-
-  // LATE ORANGES/YELLOWS/WHITES (7 colors, 29% of palette)
-  {160, 130, 0, 10},    // 17: deepOrange
-  {180, 110, 0, 20},    // 18: orange
-  {200, 90, 0, 30},     // 19: goldenOrange
-  {220, 70, 0, 50},     // 20: goldenYellow
-  {240, 50, 0, 80},     // 21: warmYellow
-  {200, 40, 10, 180},   // 22: paleYellow
-  {80, 50, 30, 255}     // 23: softWhite - Soft daylight white
+// NEW 32-color sunset/sunrise palette stored in PROGMEM to save SRAM
+// User-provided palette for smoother transitions
+const ColorGRBW PROGMEM sunsetPalette[32] = {
+  {12, 10, 25, 0},      // 0
+  {18, 14, 34, 0},      // 1
+  {28, 20, 46, 0},      // 2
+  {40, 28, 58, 0},      // 3
+  {58, 36, 68, 0},      // 4
+  {80, 44, 72, 4},      // 5
+  {100, 56, 70, 8},     // 6
+  {120, 72, 66, 12},    // 7
+  {140, 92, 60, 18},    // 8
+  {160, 112, 52, 28},   // 9
+  {180, 132, 44, 36},   // 10
+  {200, 152, 38, 48},   // 11
+  {216, 168, 34, 64},   // 12
+  {228, 184, 34, 80},   // 13
+  {236, 196, 36, 100},  // 14
+  {244, 208, 40, 120},  // 15
+  {250, 216, 52, 140},  // 16
+  {252, 220, 70, 156},  // 17
+  {252, 224, 92, 172},  // 18
+  {250, 220, 120, 188}, // 19
+  {248, 214, 146, 200}, // 20
+  {244, 206, 176, 212}, // 21
+  {236, 194, 200, 220}, // 22
+  {224, 178, 216, 228}, // 23
+  {208, 160, 224, 232}, // 24
+  {188, 140, 228, 236}, // 25
+  {168, 120, 232, 240}, // 26
+  {148, 100, 236, 244}, // 27
+  {132, 88, 238, 248},  // 28
+  {120, 78, 240, 252},  // 29
+  {112, 72, 242, 255},  // 30
+  {108, 70, 244, 255}   // 31
 };
 
 // Helper function to read color from PROGMEM
 ColorGRBW getPaletteColor(uint8_t index) {
-  if (index > 23) index = 23;  // Clamp to 24-color range
+  if (index > 31) index = 31;  // Clamp to 32-color range
   ColorGRBW color;
   memcpy_P(&color, &sunsetPalette[index], sizeof(ColorGRBW));
   return color;
 }
 
 // Interpolate between palette colors for smooth transitions
-// Takes a float position from 0.0 to 23.0 (24-color palette)
+// Takes a float position from 0.0 to 31.0 (32-color palette)
 // Returns a blended color between the two adjacent palette entries
 ColorGRBW interpolateColor(float position) {
   // Clamp position to valid range
   if (position < 0.0) position = 0.0;
-  if (position > 23.0) position = 23.0;
+  if (position > 31.0) position = 31.0;
 
   // Get the two palette indices to blend between
   uint8_t index1 = (uint8_t)position;  // Floor
   uint8_t index2 = index1 + 1;
 
   // Handle edge case at the end of the palette
-  if (index2 > 23) index2 = 23;
+  if (index2 > 31) index2 = 31;
 
   // Calculate blend factor (0.0 to 1.0 between the two colors)
   float blend = position - (float)index1;
@@ -148,11 +179,11 @@ struct ProgressionState {
 // Global progression state
 ProgressionState progState = {SEQ_OFF, 0.0, 0, false};
 
-// Helper: Convert percentage (0-100%) to palette position (0.0-23.0)
+// Helper: Convert percentage (0-100%) to palette position (0.0-31.0)
 float percentToPalettePosition(float percent) {
   if (percent < 0.0) percent = 0.0;
   if (percent > 100.0) percent = 100.0;
-  return (percent / 100.0) * 23.0;  // Map to 24-color palette
+  return (percent / 100.0) * 31.0;  // Map to 32-color palette
 }
 
 // Calculate brightness multiplier based on progression percentage and state
@@ -269,16 +300,16 @@ void updateProgression() {
     palPos = 0.0;
     c = interpolateColor(palPos);
   } else if (progState.currentSequence == SEQ_SUNRISE_PROG) {
-    // Progress through palette based on percentage (0% → 100% = palette 0.0 → 23.0)
+    // Progress through palette based on percentage (0% → 100% = palette 0.0 → 31.0)
     palPos = percentToPalettePosition(progState.progressPercent);
     c = interpolateColor(palPos);
   } else if (progState.currentSequence == SEQ_SUNSET_PROG) {
-    // Reverse progress through palette (0% → 100% = palette 23.0 → 0.0)
+    // Reverse progress through palette (0% → 100% = palette 31.0 → 0.0)
     palPos = percentToPalettePosition(100.0 - progState.progressPercent);
     c = interpolateColor(palPos);
   } else if (progState.currentSequence == SEQ_DAY) {
-    // Full daylight (palette position 23.0)
-    palPos = 23.0;
+    // Full daylight (palette position 31.0)
+    palPos = 31.0;
     c = interpolateColor(palPos);
   } else {
     // Default to night blue
@@ -489,7 +520,7 @@ void handleTouch(uint8_t pad) {
       Serial.println("Setting CLOUD_2 to white");
       setStrandColor(cloud2, 255, 255, 255, 255);
       break;
-    case 7:  // Palette test - cycles through all 24 colors
+    case 7:  // Palette test - cycles through all 32 colors
       {
         // Stop any running progressions so they don't overwrite our test color
         progState.isAnimating = false;
@@ -504,7 +535,7 @@ void handleTouch(uint8_t pad) {
         Serial.print(c.b); Serial.print(",");
         Serial.print(c.w); Serial.println(")");
         setStrandColor(horizon, c.g, c.r, c.b, c.w);
-        testColorIndex = (testColorIndex + 1) % 24;  // Cycle through 24-color palette
+        testColorIndex = (testColorIndex + 1) % 32;  // Cycle through 32-color palette
       }
       break;
     case 8:  // Was case 3 - Test function
