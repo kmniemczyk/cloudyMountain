@@ -1,3 +1,5 @@
+//HORIZON ONLY
+
 #include <Wire.h>
 #include <Adafruit_MPR121.h>
 #include <Adafruit_NeoPixel.h>
