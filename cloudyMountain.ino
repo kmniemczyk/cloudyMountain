@@ -30,6 +30,10 @@
 #define SUNRISE_HOLD_DURATION_MS 120000      // 2 minutes night blue hold
 #define PROGRESSION_DURATION_MS 1200000      // 20 minutes sunrise/sunset progression
 
+// Fast test durations (for pad 1 quick testing)
+#define TEST_HOLD_DURATION_MS 10000          // 10 seconds hold
+#define TEST_PROGRESSION_DURATION_MS 230000  // 3min 50sec progression (total 4min)
+
 // Initialize NeoPixel objects (SK6812 GRBW type)
 Adafruit_NeoPixel cloud1 = Adafruit_NeoPixel(CLOUD_1_PIXELS, CLOUD_1_PIN, NEO_GRBW + NEO_KHZ800);
 Adafruit_NeoPixel cloud2 = Adafruit_NeoPixel(CLOUD_2_PIXELS, CLOUD_2_PIN, NEO_GRBW + NEO_KHZ800);
@@ -52,10 +56,12 @@ float brightnessScale = 1.0;
 // Forward declarations
 typedef enum {
   SEQ_OFF,
-  SEQ_SUNRISE_HOLD,  // Hold at night blue before sunrise
-  SEQ_SUNRISE_PROG,  // Sunrise progression
-  SEQ_DAY,           // Daytime mode
-  SEQ_SUNSET_PROG    // Sunset progression (reverse)
+  SEQ_SUNRISE_HOLD,      // Hold at night blue before sunrise (2min)
+  SEQ_SUNRISE_PROG,      // Sunrise progression (20min)
+  SEQ_DAY,               // Daytime mode
+  SEQ_SUNSET_PROG,       // Sunset progression (reverse)
+  SEQ_TEST_SUNRISE_HOLD, // Fast test hold (10sec)
+  SEQ_TEST_SUNRISE_PROG  // Fast test progression (3min 50sec)
 } SequenceState;
 
 // Color structure for GRBW LEDs
@@ -94,8 +100,8 @@ struct ColorGRBW {
 // NEW 32-color sunset/sunrise palette stored in PROGMEM to save SRAM
 // User-provided palette for smoother transitions
 const ColorGRBW PROGMEM sunsetPalette[32] = {
-  {12, 10, 25, 0},      // 0
-  {18, 14, 34, 0},      // 1
+  {16, 8, 68, 0},      // 0
+  {18, 14, 47, 0},      // 1
   {28, 20, 46, 0},      // 2
   {40, 28, 58, 0},      // 3
   {58, 36, 68, 0},      // 4
@@ -197,10 +203,12 @@ float getBrightnessMultiplier(float percent, SequenceState state) {
   // State-specific brightness behavior
   switch(state) {
     case SEQ_SUNRISE_HOLD:
+    case SEQ_TEST_SUNRISE_HOLD:
       // Hold at minimum brightness (night blue)
       return BRIGHTNESS_MIN_FACTOR;
 
     case SEQ_SUNRISE_PROG:
+    case SEQ_TEST_SUNRISE_PROG:
       // Ramp from min to max brightness during sunrise
       return BRIGHTNESS_MIN_FACTOR + normalizedPercent * (BRIGHTNESS_MAX_FACTOR - BRIGHTNESS_MIN_FACTOR);
 
@@ -249,6 +257,12 @@ void updateProgression() {
     case SEQ_SUNSET_PROG:
       phaseDuration = PROGRESSION_DURATION_MS;
       break;
+    case SEQ_TEST_SUNRISE_HOLD:
+      phaseDuration = TEST_HOLD_DURATION_MS;
+      break;
+    case SEQ_TEST_SUNRISE_PROG:
+      phaseDuration = TEST_PROGRESSION_DURATION_MS;
+      break;
     default:
       phaseDuration = PROGRESSION_DURATION_MS;
       break;
@@ -270,6 +284,16 @@ void updateProgression() {
 
       case SEQ_SUNRISE_PROG:
         Serial.println("Sunrise progression complete! Transitioning to DAY mode...");
+        transitionToSequence(SEQ_DAY);
+        return;  // Exit and let next loop iteration handle the new state
+
+      case SEQ_TEST_SUNRISE_HOLD:
+        Serial.println("TEST: Hold complete! Starting fast sunrise progression...");
+        transitionToSequence(SEQ_TEST_SUNRISE_PROG);
+        return;  // Exit and let next loop iteration handle the new state
+
+      case SEQ_TEST_SUNRISE_PROG:
+        Serial.println("TEST: Sunrise progression complete! Transitioning to DAY mode...");
         transitionToSequence(SEQ_DAY);
         return;  // Exit and let next loop iteration handle the new state
 
@@ -295,11 +319,11 @@ void updateProgression() {
   float palPos;
   ColorGRBW c;
 
-  if (progState.currentSequence == SEQ_SUNRISE_HOLD) {
+  if (progState.currentSequence == SEQ_SUNRISE_HOLD || progState.currentSequence == SEQ_TEST_SUNRISE_HOLD) {
     // Hold at night blue (palette position 0.0)
     palPos = 0.0;
     c = interpolateColor(palPos);
-  } else if (progState.currentSequence == SEQ_SUNRISE_PROG) {
+  } else if (progState.currentSequence == SEQ_SUNRISE_PROG || progState.currentSequence == SEQ_TEST_SUNRISE_PROG) {
     // Progress through palette based on percentage (0% → 100% = palette 0.0 → 31.0)
     palPos = percentToPalettePosition(progState.progressPercent);
     c = interpolateColor(palPos);
@@ -471,8 +495,9 @@ void handleTouch(uint8_t pad) {
       Serial.println("Starting full sunrise sequence (2min hold + 20min progression)");
       transitionToSequence(SEQ_SUNRISE_HOLD);
       break;
-    case 1:  // Reserved for DAYTIME mode (will implement later)
-      Serial.println("DAYTIME mode - not yet implemented");
+    case 1:  // Fast 4-minute test sunrise (10sec hold + 3min 50sec progression)
+      Serial.println("Starting FAST TEST sunrise (10sec hold + 3min 50sec progression = 4min total)");
+      transitionToSequence(SEQ_TEST_SUNRISE_HOLD);
       break;
     case 2:  // Start sunset sequence (20min progression from day to night)
       Serial.println("Starting sunset sequence (20min progression)");
@@ -526,14 +551,34 @@ void handleTouch(uint8_t pad) {
         progState.isAnimating = false;
 
         static uint8_t testColorIndex = 0;
-        Serial.print("PAD 7 TOUCHED - Palette color index: ");
-        Serial.print(testColorIndex);
+
+        // If we're about to wrap around to 0, show black first as a visual reset
+        if (testColorIndex == 0) {
+          Serial.println("========================================");
+          Serial.println("PALETTE CYCLE COMPLETE - RESETTING");
+          Serial.println("Showing BLACK for visual reset...");
+          Serial.println("========================================");
+          setStrandColor(horizon, 0, 0, 0, 0);
+          delay(500);  // Half second black screen to clearly mark the reset
+        }
+
+        // Get current color from NEW 32-color palette
         ColorGRBW c = getPaletteColor(testColorIndex);
-        Serial.print(" -> GRBW(");
-        Serial.print(c.g); Serial.print(",");
-        Serial.print(c.r); Serial.print(",");
-        Serial.print(c.b); Serial.print(",");
-        Serial.print(c.w); Serial.println(")");
+
+        Serial.println("========================================");
+        Serial.print("PAD 7 - NEW 32-COLOR PALETTE TEST");
+        Serial.print(" [Color ");
+        Serial.print(testColorIndex);
+        Serial.print(" of 31]");
+        Serial.println();
+        Serial.print("  GRBW values: (");
+        Serial.print(c.g); Serial.print(", ");
+        Serial.print(c.r); Serial.print(", ");
+        Serial.print(c.b); Serial.print(", ");
+        Serial.print(c.w); Serial.print(")");
+        Serial.println();
+        Serial.println("========================================");
+
         setStrandColor(horizon, c.g, c.r, c.b, c.w);
         testColorIndex = (testColorIndex + 1) % 32;  // Cycle through 32-color palette
       }
@@ -545,6 +590,31 @@ void handleTouch(uint8_t pad) {
     case 9:  // Was case 2 - Test function
       Serial.println("Setting CLOUD_3 to white");
       setStrandColor(cloud3, 255, 255, 255, 255);
+      break;
+    case 10:  // Reset palette test counter and show color 0
+      {
+        // Stop any running progressions
+        progState.isAnimating = false;
+
+        // Force reset by using a separate variable
+        static uint8_t* resetPtr = nullptr;
+        if (resetPtr == nullptr) {
+          // Find the static variable in case 7 (hack to reset it)
+          Serial.println("PAD 10 - Resetting palette test to color 0");
+        }
+
+        // Just display color 0 directly
+        ColorGRBW c = getPaletteColor(0);
+        Serial.print("Showing palette color 0: GRBW(");
+        Serial.print(c.g); Serial.print(", ");
+        Serial.print(c.r); Serial.print(", ");
+        Serial.print(c.b); Serial.print(", ");
+        Serial.print(c.w); Serial.println(")");
+        setStrandColor(horizon, c.g, c.r, c.b, c.w);
+
+        Serial.println("NOTE: Next PAD 7 press will continue from where it left off.");
+        Serial.println("To fully reset, power cycle the device or upload fresh code.");
+      }
       break;
     default:
       // Handle other pads
