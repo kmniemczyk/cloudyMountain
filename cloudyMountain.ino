@@ -382,8 +382,27 @@ void updateProgression() {
     c = interpolateColor(palPos);
   }
 
-  // Apply brightness multiplier
+  // Apply brightness multiplier (keep for future cloud use)
   float brightMult = getBrightnessMultiplier(progState.progressPercent, progState.currentSequence);
+
+  // Calculate horizon-specific brightness based on palette position
+  float horizonBrightness;
+  if (progState.currentSequence == SEQ_SUNRISE_PROG || progState.currentSequence == SEQ_TEST_SUNRISE_PROG) {
+    // Two-stage brightness curve for horizon during sunrise
+    if (palPos <= 33.0) {
+      // Stage 1: Slow ramp from 12.5% to 40% (colors 0-33)
+      horizonBrightness = 0.125 + (palPos / 33.0) * (0.40 - 0.125);
+    } else if (palPos <= 36.0) {
+      // Stage 2: Fast ramp from 40% to 80% (colors 33-36)
+      horizonBrightness = 0.40 + ((palPos - 33.0) / 3.0) * (0.80 - 0.40);
+    } else {
+      // Stage 3: Continue to 100% (colors 36-39)
+      horizonBrightness = 0.80 + ((palPos - 36.0) / 3.0) * (1.0 - 0.80);
+    }
+  } else {
+    // For non-sunrise sequences, use standard brightness
+    horizonBrightness = brightMult;
+  }
 
   // Print color information to serial every second
   static unsigned long lastPrintTime = 0;
@@ -394,14 +413,74 @@ void updateProgression() {
     Serial.print(palPos, 2);
     Serial.print(" | Color index: ");
     Serial.print((uint8_t)palPos);
-    Serial.print(" | Brightness: ");
-    Serial.print(brightMult * 100, 1);
+    Serial.print(" | Horizon brightness: ");
+    Serial.print(horizonBrightness * 100, 1);
     Serial.println("%");
     lastPrintTime = millis();
   }
 
-  // Update the horizon strand with the current color and brightness
-  setStrandColor(horizon, c.g * brightMult, c.r * brightMult, c.b * brightMult, c.w * brightMult);
+  // Update the horizon strand with horizon-specific brightness
+  // Special handling for colors 32-39: spread brightness from center outward
+  if ((progState.currentSequence == SEQ_SUNRISE_PROG || progState.currentSequence == SEQ_TEST_SUNRISE_PROG)
+      && palPos >= 32.0) {
+
+    int centerPixel = HORIZON_PIXELS / 2;  // Middle LED (pixel 27 for 54 pixels)
+
+    // Calculate which "ring" of pixels should be fully bright based on palette position
+    // At color 32: center pixel (ring 0)
+    // At color 33: center + 1 pixel on each side (ring 1)
+    // At color 34: center + 2 pixels on each side (ring 2)
+    // ... continuing until color 39 when all are bright
+    float spreadProgress = palPos - 32.0;  // 0.0 at color 32, 7.0 at color 39
+    int fullyBrightRing = (int)spreadProgress;  // Which ring is fully bright
+    float ringBlend = spreadProgress - fullyBrightRing;  // How far into next ring (0.0-1.0)
+
+    // Apply per-pixel brightness
+    for (int i = 0; i < HORIZON_PIXELS; i++) {
+      int distanceFromCenter = abs(i - centerPixel);
+      float pixelBrightness;
+
+      if (distanceFromCenter < fullyBrightRing) {
+        // This pixel is in a fully bright ring
+        pixelBrightness = 1.0;
+      } else if (distanceFromCenter == fullyBrightRing) {
+        // This pixel is in the currently transitioning ring
+        pixelBrightness = horizonBrightness + (1.0 - horizonBrightness) * ringBlend;
+      } else if (distanceFromCenter == fullyBrightRing + 1) {
+        // This pixel is in the next ring, starting to brighten
+        pixelBrightness = horizonBrightness + (1.0 - horizonBrightness) * ringBlend * 0.5;
+      } else {
+        // This pixel is still at base horizon brightness
+        pixelBrightness = horizonBrightness;
+      }
+
+      // Set the pixel color with calculated brightness
+      horizon.setPixelColor(i, horizon.Color(
+        c.g * pixelBrightness,
+        c.r * pixelBrightness,
+        c.b * pixelBrightness,
+        c.w * pixelBrightness
+      ));
+    }
+
+    // Show the horizon strand (other strands handled by power limiting below)
+    horizon.show();
+
+    // Apply brightness limiting to other strands only
+    applyBrightnessLimit();
+    if (brightnessScale < 1.0) {
+      applyBrightnessToStrand(cloud1, brightnessScale);
+      applyBrightnessToStrand(cloud2, brightnessScale);
+      applyBrightnessToStrand(cloud3, brightnessScale);
+    }
+    cloud1.show();
+    cloud2.show();
+    cloud3.show();
+
+  } else {
+    // Normal uniform brightness for all other cases
+    setStrandColor(horizon, c.g * horizonBrightness, c.r * horizonBrightness, c.b * horizonBrightness, c.w * horizonBrightness);
+  }
 }
 
 void setup() {
