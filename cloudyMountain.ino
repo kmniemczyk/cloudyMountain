@@ -134,69 +134,69 @@ const ColorGRBW PROGMEM sunsetPalette[40] = {
 {112, 62, 240, 192}, //31
 {108, 60, 244, 208} //32
 */
-{0, 0, 80, 0}, //1
-{1, 0, 69, 3}, //2
-{2, 0, 62, 6}, //3
-{3, 0, 53, 9}, //4
-{6, 0, 46, 12}, //5
-{12, 0, 40, 16}, //6
-{18, 0, 34, 22}, //7
-{26, 0, 28, 29}, //8
-{32, 0, 20, 38}, //9
-{38, 0, 12, 47}, //10
-{39, 60, 8, 48}, //11 
-{40, 0, 5, 53}, //13
-{42, 1, 0, 57}, //14
-{50, 7, 0, 56}, //15
-{57, 13, 0, 55}, //16
-{64, 18, 0, 54}, //17 
-{71, 24, 0, 53}, //18
-{78, 29, 0, 52}, //19
-{84, 35, 0, 51}, //20 
-{91, 40, 0, 50}, //21
-{98, 45, 0, 49}, //22
-{104, 50, 0, 48}, //23
-{111, 56, 0, 47}, //24
-{117, 61, 0, 46}, //25
-{123, 66, 0, 45}, //26
-{130, 71, 0, 44}, //27
-{136, 76, 0, 43}, //28
-{141, 80, 0, 43}, //29
-{148, 85, 0, 42}, //30
-{154, 90, 0, 41}, //31
-{160, 95, 0, 40}, //32
-{142, 90, 0, 78}, //33
-{111, 172, 0, 122}, //34
-{80, 55, 0, 165}, //35
-{40, 28, 0, 210}, //36
-{0, 0, 0, 255}, //37
-{0, 15, 25, 210}, //38
-{0, 28, 65, 190}, //39
-{0, 30, 100, 130} //40
+{0, 0, 80, 0}, //0
+{1, 0, 69, 3}, //1
+{2, 0, 62, 6}, //2
+{3, 0, 53, 9}, //3
+{6, 0, 46, 12}, //4
+{12, 0, 40, 16}, //5
+{18, 0, 34, 22}, //6
+{26, 0, 28, 29}, //7
+{32, 0, 20, 38}, //8
+{38, 0, 12, 47}, //9
+{39, 60, 8, 48}, //10
+{40, 0, 5, 53}, //11
+{42, 1, 0, 57}, //12
+{50, 7, 0, 56}, //13
+{57, 13, 0, 55}, //14
+{64, 18, 0, 54}, //15
+{71, 24, 0, 53}, //16
+{78, 29, 0, 52}, //17
+{84, 35, 0, 51}, //18
+{91, 40, 0, 50}, //19
+{98, 45, 0, 49}, //20
+{104, 50, 0, 48}, //21
+{111, 56, 0, 47}, //22
+{117, 61, 0, 46}, //23
+{123, 66, 0, 45}, //24
+{130, 71, 0, 44}, //25
+{136, 76, 0, 43}, //26
+{141, 80, 0, 43}, //27
+{148, 85, 0, 42}, //28
+{154, 90, 0, 41}, //29
+{160, 95, 0, 40}, //30
+{142, 90, 0, 78}, //31
+{111, 172, 0, 122}, //32
+{80, 55, 0, 165}, //33
+{40, 28, 0, 210}, //34
+{0, 0, 45, 210}, //35
+{0, 15, 100, 150}, //36
+{0, 28, 160, 90}, //37
+{0, 30, 100, 130} //38
 };
 
 // Helper function to read color from PROGMEM
 ColorGRBW getPaletteColor(uint8_t index) {
-  if (index > 39) index = 39;  // Clamp to 40-color range
+  if (index > 38) index = 38;  // Clamp to 39-color range (0-38)
   ColorGRBW color;
   memcpy_P(&color, &sunsetPalette[index], sizeof(ColorGRBW));
   return color;
 }
 
 // Interpolate between palette colors for smooth transitions
-// Takes a float position from 0.0 to 39.0 (40-color palette)
+// Takes a float position from 0.0 to 38.0 (39 usable colors)
 // Returns a blended color between the two adjacent palette entries
 ColorGRBW interpolateColor(float position) {
   // Clamp position to valid range
   if (position < 0.0) position = 0.0;
-  if (position > 39.0) position = 39.0;
+  if (position > 38.0) position = 38.0;
 
   // Get the two palette indices to blend between
   uint8_t index1 = (uint8_t)position;  // Floor
   uint8_t index2 = index1 + 1;
 
   // Handle edge case at the end of the palette
-  if (index2 > 39) index2 = 39;
+  if (index2 > 38) index2 = 38;
 
   // Calculate blend factor (0.0 to 1.0 between the two colors)
   float blend = position - (float)index1;
@@ -221,16 +221,17 @@ struct ProgressionState {
   float progressPercent;         // 0.0 to 100.0
   unsigned long phaseStartTime;  // When current phase started (millis)
   bool isAnimating;              // Whether progression is active
+  bool dayModeDisplayed;         // Track if DAY mode has been displayed
 };
 
 // Global progression state
-ProgressionState progState = {SEQ_OFF, 0.0, 0, false};
+ProgressionState progState = {SEQ_OFF, 0.0, 0, false, false};
 
-// Helper: Convert percentage (0-100%) to palette position (0.0-39.0)
+// Helper: Convert percentage (0-100%) to palette position (0.0-38.0)
 float percentToPalettePosition(float percent) {
   if (percent < 0.0) percent = 0.0;
   if (percent > 100.0) percent = 100.0;
-  return (percent / 100.0) * 39.0;  // Map to 40-color palette
+  return (percent / 100.0) * 38.0;  // Map to 39 usable colors (0-38)
 }
 
 // Calculate brightness multiplier based on progression percentage and state
@@ -274,6 +275,7 @@ void transitionToSequence(SequenceState newState) {
   progState.phaseStartTime = millis();
   progState.progressPercent = 0.0;
   progState.isAnimating = true;
+  progState.dayModeDisplayed = false;  // Reset flag when transitioning
 
   Serial.print("Transitioning to sequence: ");
   Serial.println(newState);
@@ -344,9 +346,32 @@ void updateProgression() {
         break;
 
       case SEQ_DAY:
-        // DAY mode is static - just stop animating
+        // DAY mode is static - set display and stop animating
+        // Display the final daytime state (palette 38.0, full brightness, full spread)
+        {
+          ColorGRBW c = interpolateColor(38.0);
+          int centerPixel = HORIZON_PIXELS / 2;
+
+          // All pixels at full brightness in DAY mode (matching end of sunrise)
+          for (int i = 0; i < HORIZON_PIXELS; i++) {
+            horizon.setPixelColor(i, horizon.Color(c.g, c.r, c.b, c.w));
+          }
+          horizon.show();
+
+          // Apply brightness limiting to other strands only
+          applyBrightnessLimit();
+          if (brightnessScale < 1.0) {
+            applyBrightnessToStrand(cloud1, brightnessScale);
+            applyBrightnessToStrand(cloud2, brightnessScale);
+            applyBrightnessToStrand(cloud3, brightnessScale);
+          }
+          cloud1.show();
+          cloud2.show();
+          cloud3.show();
+        }
+
         progState.isAnimating = false;
-        Serial.println("DAY mode active (static).");
+        Serial.println("DAY mode active (static) - displaying palette 39 at full brightness.");
         break;
 
       default:
@@ -354,6 +379,64 @@ void updateProgression() {
         Serial.println("Sequence complete!");
         break;
     }
+  }
+
+  // Special handling for DAY mode - display immediately and stop animating
+  if (progState.currentSequence == SEQ_DAY && !progState.dayModeDisplayed) {
+    // Test: read palette entry 39 directly
+    ColorGRBW testColor = getPaletteColor(39);
+    Serial.print("Direct palette[39] read - G:");
+    Serial.print(testColor.g);
+    Serial.print(" R:");
+    Serial.print(testColor.r);
+    Serial.print(" B:");
+    Serial.print(testColor.b);
+    Serial.print(" W:");
+    Serial.println(testColor.w);
+
+    // Test: Try reading from different indices
+    Serial.println("Reading palette indices 36-39:");
+    for(int idx = 36; idx < 40; idx++) {
+      ColorGRBW test = getPaletteColor(idx);
+      Serial.print("  [");
+      Serial.print(idx);
+      Serial.print("] G:");
+      Serial.print(test.g);
+      Serial.print(" R:");
+      Serial.print(test.r);
+      Serial.print(" B:");
+      Serial.print(test.b);
+      Serial.print(" W:");
+      Serial.println(test.w);
+    }
+
+    // FIX: Use palette index 38 (the 39th entry) as the daytime color
+    // Index 39 appears to be reading past array bounds
+    ColorGRBW c = getPaletteColor(38);
+
+    Serial.print("Using hardcoded daytime color - G:");
+    Serial.print(c.g);
+    Serial.print(" R:");
+    Serial.print(c.r);
+    Serial.print(" B:");
+    Serial.print(c.b);
+    Serial.print(" W:");
+    Serial.println(c.w);
+
+    // All pixels at full brightness in DAY mode
+    for (int i = 0; i < HORIZON_PIXELS; i++) {
+      horizon.setPixelColor(i, horizon.Color(c.g, c.r, c.b, c.w));
+    }
+
+    // Show horizon immediately (before brightness limiting which might affect other strands)
+    horizon.show();
+
+    Serial.println("Horizon strand updated and shown");
+
+    progState.dayModeDisplayed = true;
+    progState.isAnimating = false;
+    Serial.println("DAY mode activated immediately - displaying palette 39 at full brightness.");
+    return;
   }
 
   // Calculate color based on current state
@@ -365,16 +448,16 @@ void updateProgression() {
     palPos = 0.0;
     c = interpolateColor(palPos);
   } else if (progState.currentSequence == SEQ_SUNRISE_PROG || progState.currentSequence == SEQ_TEST_SUNRISE_PROG) {
-    // Progress through palette based on percentage (0% → 100% = palette 0.0 → 39.0)
+    // Progress through palette based on percentage (0% → 100% = palette 0.0 → 38.0)
     palPos = percentToPalettePosition(progState.progressPercent);
     c = interpolateColor(palPos);
   } else if (progState.currentSequence == SEQ_SUNSET_PROG) {
-    // Reverse progress through palette (0% → 100% = palette 39.0 → 0.0)
+    // Reverse progress through palette (0% → 100% = palette 38.0 → 0.0)
     palPos = percentToPalettePosition(100.0 - progState.progressPercent);
     c = interpolateColor(palPos);
   } else if (progState.currentSequence == SEQ_DAY) {
-    // Full daylight (palette position 39.0)
-    palPos = 39.0;
+    // Full daylight (palette position 38.0)
+    palPos = 38.0;
     c = interpolateColor(palPos);
   } else {
     // Default to night blue
@@ -420,7 +503,7 @@ void updateProgression() {
   }
 
   // Update the horizon strand with horizon-specific brightness
-  // Special handling for colors 32-39: spread brightness from center outward
+  // Special handling for colors 32-38: spread brightness from center outward
   if ((progState.currentSequence == SEQ_SUNRISE_PROG || progState.currentSequence == SEQ_TEST_SUNRISE_PROG)
       && palPos >= 32.0) {
 
@@ -638,23 +721,9 @@ void handleTouch(uint8_t pad) {
       Serial.println("Starting sunset sequence (20min progression)");
       transitionToSequence(SEQ_SUNSET_PROG);
       break;
-    case 3:  // Display current progression with brightness multiplier
-      {
-        float palPos = percentToPalettePosition(progState.progressPercent);
-        ColorGRBW c = interpolateColor(palPos);
-
-        // Apply brightness multiplier based on progression
-        float brightMult = getBrightnessMultiplier(progState.progressPercent, progState.currentSequence);
-
-        setStrandColor(horizon, c.g * brightMult, c.r * brightMult, c.b * brightMult, c.w * brightMult);
-
-        Serial.print("Displaying progression - Percent: ");
-        Serial.print(progState.progressPercent);
-        Serial.print("%, Palette pos: ");
-        Serial.print(palPos);
-        Serial.print(", Brightness mult: ");
-        Serial.println(brightMult);
-      }
+    case 3:  // Jump directly to daytime mode
+      Serial.println("Jumping to DAY mode");
+      transitionToSequence(SEQ_DAY);
       break;
     case 4:  // RESET/OFF - Turn everything off and reset state
       Serial.println("RESET/OFF - Turning off all LEDs and stopping sequences");
@@ -739,7 +808,7 @@ void handleRelease(uint8_t pad) {
       // Reserved for SUNSET sequence
       break;
     case 3:
-      // Reserved for current progression display
+      // Reserved for DAY mode
       break;
     case 4:
       // Reserved for RESET/OFF
