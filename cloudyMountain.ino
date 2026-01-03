@@ -99,10 +99,10 @@ struct ColorGRBW {
 //   {80, 50, 30, 255}     // 23: softWhite
 // };
 
-// NEW 32-color sunset/sunrise palette stored in PROGMEM to save SRAM
+// NEW 40-color sunset/sunrise palette stored in PROGMEM to save SRAM
 // User-provided palette for smoother transitions
-const ColorGRBW PROGMEM sunsetPalette[32] = {
-{0, 0, 80, 0}, //1
+const ColorGRBW PROGMEM sunsetPalette[40] = {
+/*{0, 0, 80, 0}, //1
 {4, 3, 72, 0}, //2
 {8, 6, 68, 0}, //3
 {12, 9, 62, 0}, //4
@@ -133,30 +133,70 @@ const ColorGRBW PROGMEM sunsetPalette[32] = {
 {122, 68, 236, 176}, //30
 {112, 62, 240, 192}, //31
 {108, 60, 244, 208} //32
+*/
+{0, 0, 80, 0}, //1
+{1, 0, 69, 3}, //2
+{2, 0, 62, 6}, //3
+{3, 0, 53, 9}, //4
+{6, 0, 46, 12}, //5
+{12, 0, 40, 16}, //6
+{18, 0, 34, 22}, //7
+{26, 0, 28, 29}, //8
+{32, 0, 20, 38}, //9
+{38, 0, 12, 47}, //10
+{39, 60, 8, 48}, //11 
+{40, 0, 5, 53}, //13
+{42, 1, 0, 57}, //14
+{50, 7, 0, 56}, //15
+{57, 13, 0, 55}, //16
+{64, 18, 0, 54}, //17 
+{71, 24, 0, 53}, //18
+{78, 29, 0, 52}, //19
+{84, 35, 0, 51}, //20 
+{91, 40, 0, 50}, //21
+{98, 45, 0, 49}, //22
+{104, 50, 0, 48}, //23
+{111, 56, 0, 47}, //24
+{117, 61, 0, 46}, //25
+{123, 66, 0, 45}, //26
+{130, 71, 0, 44}, //27
+{136, 76, 0, 43}, //28
+{141, 80, 0, 43}, //29
+{148, 85, 0, 42}, //30
+{154, 90, 0, 41}, //31
+{160, 95, 0, 40}, //32
+{142, 90, 0, 78}, //33
+{111, 172, 0, 122}, //34
+{80, 55, 0, 165}, //35
+{40, 28, 0, 210}, //36
+{0, 0, 0, 255}, //37
+{0, 15, 25, 210}, //38
+{0, 28, 65, 190}, //39
+{0, 30, 100, 130} //40
 };
 
 // Helper function to read color from PROGMEM
 ColorGRBW getPaletteColor(uint8_t index) {
-  if (index > 31) index = 31;  // Clamp to 32-color range
+  if (index > 39) index = 39;  // Clamp to 40-color range
   ColorGRBW color;
   memcpy_P(&color, &sunsetPalette[index], sizeof(ColorGRBW));
   return color;
 }
 
 // Interpolate between palette colors for smooth transitions
-// Takes a float position from 0.0 to 31.0 (32-color palette)
+// Takes a float position from 0.0 to 39.0 (40-color palette)
 // Returns a blended color between the two adjacent palette entries
 ColorGRBW interpolateColor(float position) {
   // Clamp position to valid range
   if (position < 0.0) position = 0.0;
-  if (position > 31.0) position = 31.0;
+  if (position > 39.0) position = 39.0;
 
   // Get the two palette indices to blend between
   uint8_t index1 = (uint8_t)position;  // Floor
   uint8_t index2 = index1 + 1;
 
   // Handle edge case at the end of the palette
-  if (index2 > 31) index2 = 31;
+  if (index2 > 39) index2 = 39;
 
   // Calculate blend factor (0.0 to 1.0 between the two colors)
   float blend = position - (float)index1;
@@ -186,11 +226,11 @@ struct ProgressionState {
 // Global progression state
 ProgressionState progState = {SEQ_OFF, 0.0, 0, false};
 
-// Helper: Convert percentage (0-100%) to palette position (0.0-31.0)
+// Helper: Convert percentage (0-100%) to palette position (0.0-39.0)
 float percentToPalettePosition(float percent) {
   if (percent < 0.0) percent = 0.0;
   if (percent > 100.0) percent = 100.0;
-  return (percent / 100.0) * 31.0;  // Map to 32-color palette
+  return (percent / 100.0) * 39.0;  // Map to 40-color palette
 }
 
 // Calculate brightness multiplier based on progression percentage and state
@@ -325,16 +365,16 @@ void updateProgression() {
     palPos = 0.0;
     c = interpolateColor(palPos);
   } else if (progState.currentSequence == SEQ_SUNRISE_PROG || progState.currentSequence == SEQ_TEST_SUNRISE_PROG) {
-    // Progress through palette based on percentage (0% → 100% = palette 0.0 → 31.0)
+    // Progress through palette based on percentage (0% → 100% = palette 0.0 → 39.0)
     palPos = percentToPalettePosition(progState.progressPercent);
     c = interpolateColor(palPos);
   } else if (progState.currentSequence == SEQ_SUNSET_PROG) {
-    // Reverse progress through palette (0% → 100% = palette 31.0 → 0.0)
+    // Reverse progress through palette (0% → 100% = palette 39.0 → 0.0)
     palPos = percentToPalettePosition(100.0 - progState.progressPercent);
     c = interpolateColor(palPos);
   } else if (progState.currentSequence == SEQ_DAY) {
-    // Full daylight (palette position 31.0)
-    palPos = 31.0;
+    // Full daylight (palette position 39.0)
+    palPos = 39.0;
     c = interpolateColor(palPos);
   } else {
     // Default to night blue
@@ -344,6 +384,21 @@ void updateProgression() {
 
   // Apply brightness multiplier
   float brightMult = getBrightnessMultiplier(progState.progressPercent, progState.currentSequence);
+
+  // Print color information to serial every second
+  static unsigned long lastPrintTime = 0;
+  if (millis() - lastPrintTime > 1000) {
+    Serial.print("Progress: ");
+    Serial.print(progState.progressPercent, 1);
+    Serial.print("% | Palette pos: ");
+    Serial.print(palPos, 2);
+    Serial.print(" | Color index: ");
+    Serial.print((uint8_t)palPos);
+    Serial.print(" | Brightness: ");
+    Serial.print(brightMult * 100, 1);
+    Serial.println("%");
+    lastPrintTime = millis();
+  }
 
   // Update the horizon strand with the current color and brightness
   setStrandColor(horizon, c.g * brightMult, c.r * brightMult, c.b * brightMult, c.w * brightMult);
@@ -546,7 +601,7 @@ void handleTouch(uint8_t pad) {
       Serial.println("Setting CLOUD_2 to white");
       setStrandColor(cloud2, 255, 255, 255, 255);
       break;
-    case 7:  // Palette test - cycles through all 32 colors
+    case 7:  // Palette test - cycles through all 40 colors
       {
         // Stop any running progressions so they don't overwrite our test color
         progState.isAnimating = false;
@@ -563,14 +618,14 @@ void handleTouch(uint8_t pad) {
           delay(500);  // Half second black screen to clearly mark the reset
         }
 
-        // Get current color from NEW 32-color palette
+        // Get current color from NEW 40-color palette
         ColorGRBW c = getPaletteColor(testColorIndex);
 
         Serial.println("========================================");
-        Serial.print("PAD 7 - NEW 32-COLOR PALETTE TEST");
+        Serial.print("PAD 7 - NEW 40-COLOR PALETTE TEST");
         Serial.print(" [Color ");
         Serial.print(testColorIndex);
-        Serial.print(" of 31]");
+        Serial.print(" of 39]");
         Serial.println();
         Serial.print("  GRBW values: (");
         Serial.print(c.g); Serial.print(", ");
@@ -581,40 +636,7 @@ void handleTouch(uint8_t pad) {
         Serial.println("========================================");
 
         setStrandColor(horizon, c.g, c.r, c.b, c.w);
-        testColorIndex = (testColorIndex + 1) % 32;  // Cycle through 32-color palette
-      }
-      break;
-    case 8:  // Was case 3 - Test function
-      Serial.println("Setting HORIZON to white");
-      setStrandColor(horizon, 255, 255, 255, 255);
-      break;
-    case 9:  // Was case 2 - Test function
-      Serial.println("Setting CLOUD_3 to white");
-      setStrandColor(cloud3, 255, 255, 255, 255);
-      break;
-    case 10:  // Reset palette test counter and show color 0
-      {
-        // Stop any running progressions
-        progState.isAnimating = false;
-
-        // Force reset by using a separate variable
-        static uint8_t* resetPtr = nullptr;
-        if (resetPtr == nullptr) {
-          // Find the static variable in case 7 (hack to reset it)
-          Serial.println("PAD 10 - Resetting palette test to color 0");
-        }
-
-        // Just display color 0 directly
-        ColorGRBW c = getPaletteColor(0);
-        Serial.print("Showing palette color 0: GRBW(");
-        Serial.print(c.g); Serial.print(", ");
-        Serial.print(c.r); Serial.print(", ");
-        Serial.print(c.b); Serial.print(", ");
-        Serial.print(c.w); Serial.println(")");
-        setStrandColor(horizon, c.g, c.r, c.b, c.w);
-
-        Serial.println("NOTE: Next PAD 7 press will continue from where it left off.");
-        Serial.println("To fully reset, power cycle the device or upload fresh code.");
+        testColorIndex = (testColorIndex + 1) % 40;  // Cycle through 40-color palette
       }
       break;
     default:
@@ -632,30 +654,24 @@ void handleRelease(uint8_t pad) {
       // Reserved for SUNRISE sequence
       break;
     case 1:
-      // Reserved for DAYTIME mode
+      // Reserved for FAST TEST sunrise
       break;
     case 2:
       // Reserved for SUNSET sequence
       break;
     case 3:
-      // Reserved for STORM mode
+      // Reserved for current progression display
       break;
     case 4:
       // Reserved for RESET/OFF
       break;
-    case 5:  // Was case 0 - Test function
+    case 5:  // Test: Turn off CLOUD_1
       setStrandColor(cloud1, 0, 0, 0, 0);
       break;
-    case 6:  // Was case 1 - Test function
+    case 6:  // Test: Turn off CLOUD_2
       setStrandColor(cloud2, 0, 0, 0, 0);
       break;
     case 7:  // Palette test - no release action needed
-      break;
-    case 8:  // Was case 3 - Test function
-      setStrandColor(horizon, 0, 0, 0, 0);
-      break;
-    case 9:  // Was case 2 - Test function
-      setStrandColor(cloud3, 0, 0, 0, 0);
       break;
     default:
       break;
