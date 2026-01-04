@@ -36,7 +36,7 @@
 #define TEST_HOLD_DURATION_MS 10000          // 10 seconds hold
 #define TEST_PROGRESSION_DURATION_MS 230000  // 3min 50sec progression (total 4min)
 
-// Initialize NeoPixel objects (SK6812 GRBW type)
+// Initialize NeoPixel objects (SK6812 RGBW type - but chips are wired as GRBW)
 Adafruit_NeoPixel cloud1 = Adafruit_NeoPixel(CLOUD_1_PIXELS, CLOUD_1_PIN, NEO_GRBW + NEO_KHZ800);
 Adafruit_NeoPixel cloud2 = Adafruit_NeoPixel(CLOUD_2_PIXELS, CLOUD_2_PIN, NEO_GRBW + NEO_KHZ800);
 Adafruit_NeoPixel cloud3 = Adafruit_NeoPixel(CLOUD_3_PIXELS, CLOUD_3_PIN, NEO_GRBW + NEO_KHZ800);
@@ -55,6 +55,16 @@ uint16_t currentTouched = 0;
 // Global brightness scale factor (0.0 to 1.0)
 float brightnessScale = 1.0;
 
+// Cloud zone structure - divides each cloud into thirds for patch placement
+struct CloudZones {
+  uint8_t lowerStart, lowerEnd;
+  uint8_t middleStart, middleEnd;
+  uint8_t upperStart, upperEnd;
+};
+
+// Global cloud zone definitions (calculated in setup())
+CloudZones cloud1Zones, cloud2Zones, cloud3Zones;
+
 // Forward declarations
 typedef enum {
   SEQ_OFF,
@@ -66,9 +76,9 @@ typedef enum {
   SEQ_TEST_SUNRISE_PROG  // Fast test progression (3min 50sec)
 } SequenceState;
 
-// Color structure for GRBW LEDs
+// Color structure for RGBW LEDs (SK6812RGBW chip order)
 struct ColorGRBW {
-  uint8_t g, r, b, w;
+  uint8_t r, g, b, w;  // RGBW order for SK6812RGBW
 };
 
 // COMMENTED OUT - Previous 24-color palette
@@ -175,11 +185,63 @@ const ColorGRBW PROGMEM sunsetPalette[40] = {
 {0, 30, 100, 130} //38
 };
 
-// Helper function to read color from PROGMEM
+// Cloud color palette - 39 colors for cloud patch animations (RGBW order)
+// User-refined palette optimized for LED display
+const ColorGRBW PROGMEM cloudPalette[39] = {
+  {1, 0, 7, 0},         // 0: Pale purple
+  {1, 1, 5, 0},         // 1
+  {2, 1, 6, 0},         // 2
+  {1, 1, 8, 0},         // 3
+  {3, 0, 15, 0},        // 4: Blues
+  {1, 2, 16, 0},        // 5
+  {12, 2, 4, 0},        // 6: Oranges
+  {6, 2, 0, 0},         // 7
+  {8, 2, 0, 0},         // 8
+  {15, 4, 0, 0},        // 9
+  {2, 0, 12, 0},        // 10
+  {4, 0, 20, 0},        // 11
+  {14, 2, 0, 0},        // 12: Dark reddish orange
+  {16, 0, 0, 2},        // 13
+  {16, 1, 2, 0},        // 14
+  {13, 4, 0, 0},        // 15: Pale orange
+  {22, 7, 0, 0},        // 16
+  {22, 8, 0, 5},        // 17
+  {30, 3, 0, 0},        // 18
+  {30, 6, 0, 8},        // 19
+  {35, 8, 1, 0},        // 20
+  {40, 3, 0, 0},        // 21
+  {40, 30, 1, 0},       // 22
+  {40, 25, 0, 0},       // 23
+  {50, 8, 0, 0},        // 24
+  {40, 10, 1, 5},       // 25
+  {50, 6, 0, 20},       // 26
+  {50, 3, 0, 0},        // 27
+  {50, 0, 0, 30},       // 28
+  {75, 0, 10, 60},      // 29
+  {75, 8, 10, 90},      // 30
+  {80, 13, 8, 110},     // 31
+  {200, 0, 25, 100},    // 32
+  {200, 0, 25, 50},     // 33
+  {200, 0, 75, 200},    // 34
+  {150, 145, 175, 150}, // 35
+  {170, 150, 165, 140}, // 36
+  {140, 145, 175, 160}, // 37
+  {100, 100, 100, 200}  // 38
+};
+
+// Helper function to read horizon color from PROGMEM
 ColorGRBW getPaletteColor(uint8_t index) {
   if (index > 38) index = 38;  // Clamp to 39-color range (0-38)
   ColorGRBW color;
   memcpy_P(&color, &sunsetPalette[index], sizeof(ColorGRBW));
+  return color;
+}
+
+// Helper function to read cloud color from PROGMEM
+ColorGRBW getCloudPaletteColor(uint8_t index) {
+  if (index > 38) index = 38;  // Clamp to 39-color range (0-38)
+  ColorGRBW color;
+  memcpy_P(&color, &cloudPalette[index], sizeof(ColorGRBW));
   return color;
 }
 
@@ -205,17 +267,17 @@ ColorGRBW interpolateColor(float position) {
   ColorGRBW color1 = getPaletteColor(index1);
   ColorGRBW color2 = getPaletteColor(index2);
 
-  // Linearly interpolate each channel
+  // Linearly interpolate each channel (RGBW order)
   ColorGRBW result;
-  result.g = color1.g + (color2.g - color1.g) * blend;
   result.r = color1.r + (color2.r - color1.r) * blend;
+  result.g = color1.g + (color2.g - color1.g) * blend;
   result.b = color1.b + (color2.b - color1.b) * blend;
   result.w = color1.w + (color2.w - color1.w) * blend;
 
   return result;
 }
 
-// State tracking structure
+// State tracking structure for horizon progression
 struct ProgressionState {
   SequenceState currentSequence;
   float progressPercent;         // 0.0 to 100.0
@@ -226,6 +288,34 @@ struct ProgressionState {
 
 // Global progression state
 ProgressionState progState = {SEQ_OFF, 0.0, 0, false, false};
+
+// Cloud patch system - tracks individual color patches fading in on clouds
+#define MAX_PATCHES_PER_CLOUD 15  // Max simultaneous patches per cloud strand
+
+struct CloudPatch {
+  bool active;                    // Is this patch slot in use?
+  uint8_t centerPixel;            // Center position of patch
+  uint8_t patchSize;              // Total pixels in patch (4-9, or special first patch)
+  uint8_t targetColorIndex;       // Index into cloudPalette
+
+  // Fade-in timing
+  unsigned long fadeStartTime;    // When fade began (millis)
+  uint16_t fadeDuration;          // How long fade takes (4000-7000 ms)
+  float fadeProgress;             // 0.0 = transparent, 1.0 = opaque
+
+  // Blending state
+  ColorGRBW targetColor;          // Final color (read from cloudPalette)
+  ColorGRBW previousColors[9];    // Colors that were at these pixels before patch (max 9 pixels)
+};
+
+struct CloudState {
+  CloudPatch patches[MAX_PATCHES_PER_CLOUD];
+  ColorGRBW currentPixelColors[46];  // Track current state (max 46 for CLOUD_3)
+  uint8_t numPixels;                  // Actual pixel count for this cloud
+};
+
+// Global cloud states
+CloudState cloud1State, cloud2State, cloud3State;
 
 // Helper: Convert percentage (0-100%) to palette position (0.0-38.0)
 float percentToPalettePosition(float percent) {
@@ -537,10 +627,10 @@ void updateProgression() {
         pixelBrightness = horizonBrightness;
       }
 
-      // Set the pixel color with calculated brightness
+      // Set the pixel color with calculated brightness (RGBW order)
       horizon.setPixelColor(i, horizon.Color(
-        c.g * pixelBrightness,
         c.r * pixelBrightness,
+        c.g * pixelBrightness,
         c.b * pixelBrightness,
         c.w * pixelBrightness
       ));
@@ -561,8 +651,8 @@ void updateProgression() {
     cloud3.show();
 
   } else {
-    // Normal uniform brightness for all other cases
-    setStrandColor(horizon, c.g * horizonBrightness, c.r * horizonBrightness, c.b * horizonBrightness, c.w * horizonBrightness);
+    // Normal uniform brightness for all other cases (RGBW order)
+    setStrandColor(horizon, c.r * horizonBrightness, c.g * horizonBrightness, c.b * horizonBrightness, c.w * horizonBrightness);
   }
 }
 
@@ -647,6 +737,65 @@ void setup() {
   cloud3.show();
   horizon.show();
 
+  // Calculate cloud zone boundaries (divide each cloud into thirds)
+  // CLOUD_1: 32 pixels → lower: 0-10 (11px), middle: 11-21 (11px), upper: 22-31 (10px)
+  cloud1Zones.lowerStart = 0;
+  cloud1Zones.lowerEnd = 10;
+  cloud1Zones.middleStart = 11;
+  cloud1Zones.middleEnd = 21;
+  cloud1Zones.upperStart = 22;
+  cloud1Zones.upperEnd = 31;
+
+  // CLOUD_2: 45 pixels → lower: 0-14 (15px), middle: 15-29 (15px), upper: 30-44 (15px)
+  cloud2Zones.lowerStart = 0;
+  cloud2Zones.lowerEnd = 14;
+  cloud2Zones.middleStart = 15;
+  cloud2Zones.middleEnd = 29;
+  cloud2Zones.upperStart = 30;
+  cloud2Zones.upperEnd = 44;
+
+  // CLOUD_3: 46 pixels → lower: 0-15 (16px), middle: 16-30 (15px), upper: 31-45 (15px)
+  cloud3Zones.lowerStart = 0;
+  cloud3Zones.lowerEnd = 15;
+  cloud3Zones.middleStart = 16;
+  cloud3Zones.middleEnd = 30;
+  cloud3Zones.upperStart = 31;
+  cloud3Zones.upperEnd = 45;
+
+  Serial.println("Cloud zones calculated:");
+  Serial.print("  CLOUD_1: lower[0-10] middle[11-21] upper[22-31]");
+  Serial.println();
+  Serial.print("  CLOUD_2: lower[0-14] middle[15-29] upper[30-44]");
+  Serial.println();
+  Serial.print("  CLOUD_3: lower[0-15] middle[16-30] upper[31-45]");
+  Serial.println();
+
+  // Initialize cloud states
+  cloud1State.numPixels = CLOUD_1_PIXELS;
+  cloud2State.numPixels = CLOUD_2_PIXELS;
+  cloud3State.numPixels = CLOUD_3_PIXELS;
+
+  // Set all pixels to starting deep blue (cloud color 0)
+  ColorGRBW startColor = getCloudPaletteColor(0);
+  for (int i = 0; i < CLOUD_1_PIXELS; i++) {
+    cloud1State.currentPixelColors[i] = startColor;
+  }
+  for (int i = 0; i < CLOUD_2_PIXELS; i++) {
+    cloud2State.currentPixelColors[i] = startColor;
+  }
+  for (int i = 0; i < CLOUD_3_PIXELS; i++) {
+    cloud3State.currentPixelColors[i] = startColor;
+  }
+
+  // Initialize all patches to inactive
+  for (int i = 0; i < MAX_PATCHES_PER_CLOUD; i++) {
+    cloud1State.patches[i].active = false;
+    cloud2State.patches[i].active = false;
+    cloud3State.patches[i].active = false;
+  }
+
+  Serial.println("Cloud states initialized (all patches inactive, starting in deep blue)");
+
   // Initialize stars pin as output and turn on by default
   pinMode(STARS_PIN, OUTPUT);
   digitalWrite(STARS_PIN, HIGH);  // Turn stars ON by default
@@ -656,6 +805,44 @@ void setup() {
 }
 
 void loop() {
+  // Check for serial input (for pad 6 custom color testing)
+  if (Serial.available() > 0) {
+    String input = Serial.readStringUntil('\n');
+    input.trim();  // Remove whitespace
+
+    // Parse R,G,B,W format
+    int r = -1, g = -1, b = -1, w = -1;
+    int commaIndex1 = input.indexOf(',');
+    int commaIndex2 = input.indexOf(',', commaIndex1 + 1);
+    int commaIndex3 = input.indexOf(',', commaIndex2 + 1);
+
+    if (commaIndex1 > 0 && commaIndex2 > 0 && commaIndex3 > 0) {
+      r = input.substring(0, commaIndex1).toInt();
+      g = input.substring(commaIndex1 + 1, commaIndex2).toInt();
+      b = input.substring(commaIndex2 + 1, commaIndex3).toInt();
+      w = input.substring(commaIndex3 + 1).toInt();
+
+      // Validate range (0-255)
+      if (r >= 0 && r <= 255 && g >= 0 && g <= 255 &&
+          b >= 0 && b <= 255 && w >= 0 && w <= 255) {
+        Serial.println("========================================");
+        Serial.print("Setting CLOUD_2 to RGBW: (");
+        Serial.print(r); Serial.print(", ");
+        Serial.print(g); Serial.print(", ");
+        Serial.print(b); Serial.print(", ");
+        Serial.print(w); Serial.print(")");
+        Serial.println();
+        Serial.println("========================================");
+
+        setStrandColor(cloud2, r, g, b, w);
+      } else {
+        Serial.println("ERROR: Values must be 0-255");
+      }
+    } else {
+      Serial.println("ERROR: Invalid format. Use: R,G,B,W (example: 0,0,0,255)");
+    }
+  }
+
   // Get current touch state from MPR121
   currentTouched = touchSensor.touched();
 
@@ -745,46 +932,70 @@ void handleTouch(uint8_t pad) {
       Serial.println("Setting CLOUD_1 to white");
       setStrandColor(cloud1, 255, 255, 255, 255);
       break;
-    case 6:  // Was case 1 - Test function
-      Serial.println("Setting CLOUD_2 to white");
-      setStrandColor(cloud2, 255, 255, 255, 255);
+    case 6:  // Custom color test - set via serial input
+      Serial.println("========================================");
+      Serial.println("PAD 6 - CUSTOM COLOR TEST (CLOUD_2)");
+      Serial.println("Enter RGBW values in Serial Monitor:");
+      Serial.println("Format: R,G,B,W (example: 0,0,0,255)");
+      Serial.println("Waiting for input...");
+      Serial.println("========================================");
+
+      // Set flag to indicate we're waiting for color input
+      progState.isAnimating = false;  // Stop any running animations
       break;
-    case 7:  // Palette test - cycles through all 40 colors
+    case 7:  // CLOUD color palette test - cycles through all 39 cloud colors on CLOUD_1
       {
         // Stop any running progressions so they don't overwrite our test color
         progState.isAnimating = false;
 
-        static uint8_t testColorIndex = 0;
+        static uint8_t cloudTestColorIndex = 0;
+        static bool showingBlackReset = false;
 
-        // If we're about to wrap around to 0, show black first as a visual reset
-        if (testColorIndex == 0) {
+        // After showing color 38 (the last color), show black before resetting to 0
+        if (cloudTestColorIndex == 0 && !showingBlackReset) {
           Serial.println("========================================");
-          Serial.println("PALETTE CYCLE COMPLETE - RESETTING");
-          Serial.println("Showing BLACK for visual reset...");
+          Serial.println("CLOUD PALETTE CYCLE COMPLETE - SHOWING BLACK");
+          Serial.println("Press pad 7 again to restart from color 0");
           Serial.println("========================================");
-          setStrandColor(horizon, 0, 0, 0, 0);
-          delay(500);  // Half second black screen to clearly mark the reset
+          setStrandColor(cloud1, 0, 0, 0, 0);
+          showingBlackReset = true;
+          return;  // Wait for next press
         }
 
-        // Get current color from NEW 40-color palette
-        ColorGRBW c = getPaletteColor(testColorIndex);
+        // If we just showed black, reset the flag and start from 0
+        if (showingBlackReset) {
+          showingBlackReset = false;
+          cloudTestColorIndex = 0;
+        }
+
+        // Get current color from cloud palette
+        ColorGRBW c = getCloudPaletteColor(cloudTestColorIndex);
 
         Serial.println("========================================");
-        Serial.print("PAD 7 - NEW 40-COLOR PALETTE TEST");
-        Serial.print(" [Color ");
-        Serial.print(testColorIndex);
-        Serial.print(" of 39]");
+        Serial.print("PAD 7 - CLOUD COLOR PALETTE TEST (CLOUD_1)");
         Serial.println();
-        Serial.print("  GRBW values: (");
-        Serial.print(c.g); Serial.print(", ");
+        Serial.print("  Cloud Color Index: ");
+        Serial.print(cloudTestColorIndex);
+        Serial.print(" of 38");
+        Serial.println();
+        Serial.print("  RGBW values: (");
         Serial.print(c.r); Serial.print(", ");
+        Serial.print(c.g); Serial.print(", ");
         Serial.print(c.b); Serial.print(", ");
         Serial.print(c.w); Serial.print(")");
         Serial.println();
         Serial.println("========================================");
 
-        setStrandColor(horizon, c.g, c.r, c.b, c.w);
-        testColorIndex = (testColorIndex + 1) % 40;  // Cycle through 40-color palette
+        // Display color on CLOUD_1 (RGBW order)
+        setStrandColor(cloud1, c.r, c.g, c.b, c.w);
+
+        // Increment to next color
+        cloudTestColorIndex++;
+
+        // After showing the last color (38), next press will trigger black
+        if (cloudTestColorIndex >= 39) {
+          cloudTestColorIndex = 0;
+        }
       }
       break;
     default:
@@ -880,22 +1091,23 @@ void applyBrightnessLimit() {
   }
 }
 
-// Apply brightness scaling to a single strand
+// Apply brightness scaling to a single strand (RGBW order)
 void applyBrightnessToStrand(Adafruit_NeoPixel &strand, float scale) {
   for (int i = 0; i < strand.numPixels(); i++) {
     uint32_t color = strand.getPixelColor(i);
-    uint8_t g = ((color >> 24) & 0xFF) * scale;
-    uint8_t r = ((color >> 16) & 0xFF) * scale;
-    uint8_t b = ((color >> 8) & 0xFF) * scale;
-    uint8_t w = (color & 0xFF) * scale;
-    strand.setPixelColor(i, strand.Color(g, r, b, w));
+    uint8_t r = ((color >> 24) & 0xFF) * scale;  // Red is MSB for RGBW
+    uint8_t g = ((color >> 16) & 0xFF) * scale;  // Green
+    uint8_t b = ((color >> 8) & 0xFF) * scale;   // Blue
+    uint8_t w = (color & 0xFF) * scale;           // White is LSB
+    strand.setPixelColor(i, strand.Color(r, g, b, w));
   }
 }
 
-// Helper function to set entire strand to one color
-void setStrandColor(Adafruit_NeoPixel &strand, uint8_t green, uint8_t red, uint8_t blue, uint8_t white) {
+// Helper function to set entire strand to one color (RGBW order for parameters)
+// NOTE: For NEO_RGBW, Color() expects (R,G,B,W) and we pass params in that order
+void setStrandColor(Adafruit_NeoPixel &strand, uint8_t red, uint8_t green, uint8_t blue, uint8_t white) {
   for (int i = 0; i < strand.numPixels(); i++) {
-    strand.setPixelColor(i, strand.Color(green, red, blue, white));
+    strand.setPixelColor(i, strand.Color(red, green, blue, white));
   }
 
   // After updating, check if we need to scale brightness
