@@ -81,69 +81,11 @@ struct ColorGRBW {
   uint8_t r, g, b, w;  // RGBW order for SK6812RGBW
 };
 
-// COMMENTED OUT - Previous 24-color palette
-// const ColorGRBW PROGMEM sunsetPalette_OLD[24] = {
-//   {0, 0, 80, 0},        // 0: nightBlue
-//   {5, 8, 72, 0},        // 1: midnight transition
-//   {10, 15, 65, 0},      // 2: darkIndigo
-//   {17, 25, 68, 0},      // 3: early twilight
-//   {25, 35, 65, 0},      // 4: deepPurple
-//   {33, 48, 60, 0},      // 5: dawn approach
-//   {40, 60, 55, 0},      // 6: twilightPurple
-//   {50, 70, 48, 0},      // 7: light purple
-//   {60, 80, 40, 0},      // 8: lavender
-//   {70, 90, 35, 0},      // 9: purple-rose bridge
-//   {80, 100, 30, 0},     // 10: deepRose
-//   {90, 110, 25, 0},     // 11: rose pink bridge
-//   {100, 120, 20, 0},    // 12: rosePink
-//   {110, 125, 15, 0},    // 13: warm pink transition
-//   {120, 130, 10, 0},    // 14: warmPink
-//   {130, 135, 7, 0},     // 15: peach approach
-//   {140, 140, 5, 0},     // 16: peach
-//   {160, 130, 0, 10},    // 17: deepOrange
-//   {180, 110, 0, 20},    // 18: orange
-//   {200, 90, 0, 30},     // 19: goldenOrange
-//   {220, 70, 0, 50},     // 20: goldenYellow
-//   {240, 50, 0, 80},     // 21: warmYellow
-//   {200, 40, 10, 180},   // 22: paleYellow
-//   {80, 50, 30, 255}     // 23: softWhite
-// };
 
 // NEW 40-color sunset/sunrise palette stored in PROGMEM to save SRAM
 // User-provided palette for smoother transitions
 const ColorGRBW PROGMEM sunsetPalette[40] = {
-/*{0, 0, 80, 0}, //1
-{4, 3, 72, 0}, //2
-{8, 6, 68, 0}, //3
-{12, 9, 62, 0}, //4
-{18, 12, 58, 0}, //5
-{28, 16, 56, 0}, //6
-{40, 22, 56, 0}, //7
-{56, 30, 58, 1}, //8
-{72, 40, 60, 2}, //9
-{88, 50, 62, 3}, //10
-{100, 60, 54, 4}, //11 
-{140, 92, 40, 6}, //13
-{160, 108, 36, 8}, //14
-{176, 124, 36, 10}, //15
-{192, 140, 38, 12}, //16
-{204, 154, 44, 14}, //17 
-{214, 166, 58, 16}, //18
-{222, 176, 78, 20}, //19
-{228, 182, 102, 24}, //20 
-{232, 186, 124, 32}, //21
-{232, 182, 148, 44}, //22
-{228, 174, 172, 60}, //23
-{220, 162, 192, 76}, //24
-{208, 146, 208, 96}, //25
-{192, 128, 220, 112}, //26
-{172, 110, 224, 128}, //27
-{152, 92, 228, 144}, //28
-{136, 78, 232, 160}, //29
-{122, 68, 236, 176}, //30
-{112, 62, 240, 192}, //31
-{108, 60, 244, 208} //32
-*/
+
 {0, 0, 80, 0}, //0
 {1, 0, 69, 3}, //1
 {2, 0, 62, 6}, //2
@@ -317,12 +259,310 @@ struct CloudState {
 // Global cloud states
 CloudState cloud1State, cloud2State, cloud3State;
 
+// Enum for zone selection (used in Phase 3)
+enum CloudZone { ZONE_LOWER, ZONE_MIDDLE, ZONE_UPPER };
+
+// Forward declarations for Phase 2 and Phase 3 functions
+// (Arduino IDE preprocessor needs these for complex struct types)
+ColorGRBW blendColorsWithDip(ColorGRBW oldColor, ColorGRBW newColor, float fadeProgress);
+void updateCloudPatches(CloudState &cloudState, Adafruit_NeoPixel &strand);
+void createTestPatch(CloudState* cloudState, uint8_t centerPixel, uint8_t patchSize, uint8_t colorIndex, uint16_t fadeDuration);
+CloudZone selectZoneForHorizonColor(uint8_t horizonColorIndex);
+void getZoneBounds(CloudZones &zones, CloudZone zone, uint8_t &start, uint8_t &end);
+void selectPatchColors(uint8_t horizonColorIndex, uint8_t *selectedColors);
+void triggerCloudPatchesForHorizonColor(uint8_t horizonColorIndex);
+
 // Helper: Convert percentage (0-100%) to palette position (0.0-38.0)
 float percentToPalettePosition(float percent) {
   if (percent < 0.0) percent = 0.0;
   if (percent > 100.0) percent = 100.0;
   return (percent / 100.0) * 38.0;  // Map to 39 usable colors (0-38)
 }
+
+// ========== PHASE 2: CLOUD PATCH BLENDING SYSTEM ==========
+
+// Blend two GRBW colors with transparent-to-opaque fade and subtle brightness dip
+// fadeProgress: 0.0 = fully oldColor, 1.0 = fully newColor
+ColorGRBW blendColorsWithDip(ColorGRBW oldColor, ColorGRBW newColor, float fadeProgress) {
+  // Calculate brightness dip factor (gentle 80% minimum at midpoint)
+  float dipFactor = 1.0;
+  if (fadeProgress > 0.0 && fadeProgress < 1.0) {
+    // Dip curve: starts at 1.0, dips to 0.8 at 0.5, returns to 1.0
+    float dipAmount = 0.2;  // 20% dip
+    dipFactor = 1.0 - (dipAmount * sin(fadeProgress * PI));
+  }
+
+  // Blend each channel with dip applied
+  ColorGRBW result;
+  result.g = ((oldColor.g * (1.0 - fadeProgress)) + (newColor.g * fadeProgress)) * dipFactor;
+  result.r = ((oldColor.r * (1.0 - fadeProgress)) + (newColor.r * fadeProgress)) * dipFactor;
+  result.b = ((oldColor.b * (1.0 - fadeProgress)) + (newColor.b * fadeProgress)) * dipFactor;
+  result.w = ((oldColor.w * (1.0 - fadeProgress)) + (newColor.w * fadeProgress)) * dipFactor;
+
+  return result;
+}
+
+// Update all active patches for one cloud and render to LED strand
+void updateCloudPatches(CloudState &cloudState, Adafruit_NeoPixel &strand) {
+  unsigned long currentTime = millis();
+
+  // Update fade progress for all active patches
+  for (int p = 0; p < MAX_PATCHES_PER_CLOUD; p++) {
+    if (!cloudState.patches[p].active) continue;
+
+    CloudPatch &patch = cloudState.patches[p];
+
+    // Calculate fade progress based on elapsed time
+    unsigned long elapsed = currentTime - patch.fadeStartTime;
+    patch.fadeProgress = min(1.0f, (float)elapsed / (float)patch.fadeDuration);
+
+    // Calculate which pixels this patch affects
+    int halfSize = patch.patchSize / 2;
+    int startPixel = patch.centerPixel - halfSize;
+    int endPixel = startPixel + patch.patchSize;
+
+    // Clamp to valid range
+    startPixel = max(0, startPixel);
+    endPixel = min((int)cloudState.numPixels, endPixel);
+
+    // Update each affected pixel
+    for (int i = startPixel; i < endPixel; i++) {
+      int patchLocalIndex = i - startPixel;
+
+      // Blend from previous color to target color
+      ColorGRBW blended = blendColorsWithDip(
+        patch.previousColors[patchLocalIndex],
+        patch.targetColor,
+        patch.fadeProgress
+      );
+
+      // Update cloud state with blended color
+      cloudState.currentPixelColors[i] = blended;
+    }
+
+    // If patch has completed fading in, mark it as inactive to free the slot
+    if (patch.fadeProgress >= 1.0f) {
+      patch.active = false;
+    }
+  }
+
+  // Apply final colors to LED strand
+  for (int i = 0; i < cloudState.numPixels; i++) {
+    ColorGRBW c = cloudState.currentPixelColors[i];
+    strand.setPixelColor(i, strand.Color(c.r, c.g, c.b, c.w));  // RGBW order (same as horizon)
+  }
+
+  strand.show();
+}
+
+// Test helper: Create a single patch manually for testing
+void createTestPatch(CloudState* cloudState, uint8_t centerPixel, uint8_t patchSize,
+                     uint8_t colorIndex, uint16_t fadeDuration) {
+  // Find empty patch slot
+  int patchSlot = -1;
+  for (int i = 0; i < MAX_PATCHES_PER_CLOUD; i++) {
+    if (!cloudState->patches[i].active) {
+      patchSlot = i;
+      break;
+    }
+  }
+
+  if (patchSlot == -1) {
+    Serial.println("ERROR: No available patch slots!");
+    return;
+  }
+
+  CloudPatch &patch = cloudState->patches[patchSlot];
+
+  // Initialize patch data
+  patch.active = true;
+  patch.centerPixel = centerPixel;
+  patch.patchSize = patchSize;
+  patch.targetColorIndex = colorIndex;
+  patch.fadeStartTime = millis();
+  patch.fadeDuration = fadeDuration;
+  patch.fadeProgress = 0.0;
+
+  // Read target color from cloud palette
+  patch.targetColor = getCloudPaletteColor(colorIndex);
+
+  // Capture current colors at patch locations (for blending)
+  int halfSize = patchSize / 2;
+  int startPixel = centerPixel - halfSize;
+
+  for (int i = 0; i < patchSize; i++) {
+    int pixelIndex = startPixel + i;
+    if (pixelIndex >= 0 && pixelIndex < cloudState->numPixels) {
+      patch.previousColors[i] = cloudState->currentPixelColors[pixelIndex];
+    } else {
+      // Out of bounds, use deep blue default (color 0)
+      patch.previousColors[i] = getCloudPaletteColor(0);
+    }
+  }
+
+  Serial.println("========================================");
+  Serial.println("TEST PATCH CREATED:");
+  Serial.print("  Center pixel: "); Serial.println(centerPixel);
+  Serial.print("  Patch size: "); Serial.println(patchSize);
+  Serial.print("  Target color index: "); Serial.println(colorIndex);
+  Serial.print("  Target color GRBW: (");
+  Serial.print(patch.targetColor.g); Serial.print(", ");
+  Serial.print(patch.targetColor.r); Serial.print(", ");
+  Serial.print(patch.targetColor.b); Serial.print(", ");
+  Serial.print(patch.targetColor.w); Serial.println(")");
+  Serial.print("  Fade duration: "); Serial.print(fadeDuration); Serial.println("ms");
+  Serial.println("========================================");
+}
+
+// ========== END PHASE 2 ==========
+
+// ========== PHASE 3: PATCH TRIGGERING LOGIC ==========
+
+// Track last horizon color to detect changes
+uint8_t lastHorizonColorIndex = 0;
+
+// Select which zone to place a patch based on horizon color progression
+CloudZone selectZoneForHorizonColor(uint8_t horizonColorIndex) {
+  // Divide 39 colors into quarters: 1-9, 10-19, 20-29, 30-39
+
+  if (horizonColorIndex >= 1 && horizonColorIndex <= 9) {
+    // First quarter: 90% lower, 10% middle
+    return (random(100) < 90) ? ZONE_LOWER : ZONE_MIDDLE;
+  }
+  else if (horizonColorIndex >= 10 && horizonColorIndex <= 19) {
+    // Second quarter: 70% middle, 25% lower, 5% upper
+    int r = random(100);
+    if (r < 70) return ZONE_MIDDLE;
+    else if (r < 95) return ZONE_LOWER;
+    else return ZONE_UPPER;
+  }
+  else if (horizonColorIndex >= 20 && horizonColorIndex <= 29) {
+    // Third quarter: 70% upper, 20% middle, 10% lower
+    int r = random(100);
+    if (r < 70) return ZONE_UPPER;
+    else if (r < 90) return ZONE_MIDDLE;
+    else return ZONE_LOWER;
+  }
+  else {  // 30-39
+    // Fourth quarter: evenly distributed
+    int r = random(100);
+    if (r < 33) return ZONE_LOWER;
+    else if (r < 66) return ZONE_MIDDLE;
+    else return ZONE_UPPER;
+  }
+}
+
+// Get zone boundaries for a given cloud and zone type
+void getZoneBounds(CloudZones &zones, CloudZone zone, uint8_t &start, uint8_t &end) {
+  switch(zone) {
+    case ZONE_LOWER:
+      start = zones.lowerStart;
+      end = zones.lowerEnd;
+      break;
+    case ZONE_MIDDLE:
+      start = zones.middleStart;
+      end = zones.middleEnd;
+      break;
+    case ZONE_UPPER:
+      start = zones.upperStart;
+      end = zones.upperEnd;
+      break;
+  }
+}
+
+// Select 3 cloud colors for patch creation (2 of one color, 1 of another)
+// Based on current horizon color, picks from eligible cloud palette colors
+void selectPatchColors(uint8_t horizonColorIndex, uint8_t *selectedColors) {
+  // Simplified mapping: Use cloud colors that are close to the horizon progression
+  // For a more sophisticated approach, you could create a lookup table
+
+  // For now, use a simple strategy:
+  // - Use the same index as horizon (clamped to 0-38)
+  // - Add variety by sometimes picking nearby colors
+
+  uint8_t baseColor = min(horizonColorIndex, (uint8_t)38);
+
+  // First color: use base color
+  selectedColors[0] = baseColor;
+
+  // Second color: same as first (creates 2 patches of same color)
+  selectedColors[1] = baseColor;
+
+  // Third color: nearby color for variety
+  if (baseColor > 0 && random(100) < 50) {
+    selectedColors[2] = baseColor - 1;  // Use previous color
+  } else if (baseColor < 38) {
+    selectedColors[2] = baseColor + 1;  // Use next color
+  } else {
+    selectedColors[2] = baseColor;  // At boundary, use same
+  }
+}
+
+// Trigger cloud patches based on current horizon color
+void triggerCloudPatchesForHorizonColor(uint8_t horizonColorIndex) {
+  // Select which zone to use based on horizon progression
+  CloudZone zone = selectZoneForHorizonColor(horizonColorIndex);
+
+  // Get 3 colors to use for patches (2 of one, 1 of another)
+  uint8_t selectedColors[3];
+  selectPatchColors(horizonColorIndex, selectedColors);
+
+  // Create 1 patch on each of the 3 clouds (3 total patches)
+  // Each cloud gets one randomly selected color from the 3 colors
+
+  // CLOUD_1
+  {
+    uint8_t zoneStart, zoneEnd;
+    getZoneBounds(cloud1Zones, zone, zoneStart, zoneEnd);
+
+    // Random position within zone
+    uint8_t centerPixel = random(zoneStart, zoneEnd + 1);
+
+    // Random patch size (4-9 pixels)
+    uint8_t patchSize = random(4, 10);
+
+    // Random color from our 3 selected colors
+    uint8_t colorIndex = selectedColors[random(3)];
+
+    // Random fade duration (4000-7000ms)
+    uint16_t fadeDuration = random(4000, 7001);
+
+    createTestPatch(&cloud1State, centerPixel, patchSize, colorIndex, fadeDuration);
+  }
+
+  // CLOUD_2
+  {
+    uint8_t zoneStart, zoneEnd;
+    getZoneBounds(cloud2Zones, zone, zoneStart, zoneEnd);
+
+    uint8_t centerPixel = random(zoneStart, zoneEnd + 1);
+    uint8_t patchSize = random(4, 10);
+    uint8_t colorIndex = selectedColors[random(3)];
+    uint16_t fadeDuration = random(4000, 7001);
+
+    createTestPatch(&cloud2State, centerPixel, patchSize, colorIndex, fadeDuration);
+  }
+
+  // CLOUD_3
+  {
+    uint8_t zoneStart, zoneEnd;
+    getZoneBounds(cloud3Zones, zone, zoneStart, zoneEnd);
+
+    uint8_t centerPixel = random(zoneStart, zoneEnd + 1);
+    uint8_t patchSize = random(4, 10);
+    uint8_t colorIndex = selectedColors[random(3)];
+    uint16_t fadeDuration = random(4000, 7001);
+
+    createTestPatch(&cloud3State, centerPixel, patchSize, colorIndex, fadeDuration);
+  }
+
+  Serial.print("Created 3 cloud patches for horizon color ");
+  Serial.print(horizonColorIndex);
+  Serial.print(" in zone ");
+  Serial.println(zone == ZONE_LOWER ? "LOWER" : (zone == ZONE_MIDDLE ? "MIDDLE" : "UPPER"));
+}
+
+// ========== END PHASE 3 ==========
 
 // Calculate brightness multiplier based on progression percentage and state
 // Returns a value between BRIGHTNESS_MIN_FACTOR (0.125) and BRIGHTNESS_MAX_FACTOR (1.0)
@@ -366,6 +606,9 @@ void transitionToSequence(SequenceState newState) {
   progState.progressPercent = 0.0;
   progState.isAnimating = true;
   progState.dayModeDisplayed = false;  // Reset flag when transitioning
+
+  // Reset horizon color tracking for patch triggering
+  lastHorizonColorIndex = 0;
 
   Serial.print("Transitioning to sequence: ");
   Serial.println(newState);
@@ -553,6 +796,22 @@ void updateProgression() {
     // Default to night blue
     palPos = 0.0;
     c = interpolateColor(palPos);
+  }
+
+  // Track horizon color changes and trigger cloud patches
+  uint8_t currentHorizonColorIndex = (uint8_t)palPos;
+
+  // Only trigger patches during progression sequences (not hold or day modes)
+  if ((progState.currentSequence == SEQ_SUNRISE_PROG ||
+       progState.currentSequence == SEQ_TEST_SUNRISE_PROG ||
+       progState.currentSequence == SEQ_SUNSET_PROG) &&
+      currentHorizonColorIndex != lastHorizonColorIndex) {
+
+    // Trigger 3 new cloud patches (1 on each cloud)
+    triggerCloudPatchesForHorizonColor(currentHorizonColorIndex);
+
+    // Update tracking variable
+    lastHorizonColorIndex = currentHorizonColorIndex;
   }
 
   // Apply brightness multiplier (keep for future cloud use)
@@ -884,6 +1143,11 @@ void loop() {
     updateProgression();
   }
 
+  // Update cloud patch animations (Phase 2)
+  updateCloudPatches(cloud1State, cloud1);
+  updateCloudPatches(cloud2State, cloud2);
+  updateCloudPatches(cloud3State, cloud3);
+
   // Small delay to avoid overwhelming the serial output
   delay(10);
 }
@@ -920,17 +1184,64 @@ void handleTouch(uint8_t pad) {
       progState.currentSequence = SEQ_OFF;
       progState.progressPercent = 0.0;
 
+      // HARD RESET: Clear all cloud patches and reset to starting state
+      Serial.println("Clearing all cloud patches...");
+
+      // Deactivate all patches on all clouds
+      for (int i = 0; i < MAX_PATCHES_PER_CLOUD; i++) {
+        cloud1State.patches[i].active = false;
+        cloud2State.patches[i].active = false;
+        cloud3State.patches[i].active = false;
+      }
+
+      // Reset all cloud pixels to starting deep blue (cloud color 0)
+      ColorGRBW startColor = getCloudPaletteColor(0);
+      for (int i = 0; i < CLOUD_1_PIXELS; i++) {
+        cloud1State.currentPixelColors[i] = startColor;
+      }
+      for (int i = 0; i < CLOUD_2_PIXELS; i++) {
+        cloud2State.currentPixelColors[i] = startColor;
+      }
+      for (int i = 0; i < CLOUD_3_PIXELS; i++) {
+        cloud3State.currentPixelColors[i] = startColor;
+      }
+
       // Turn off all LED strands
       setStrandColor(cloud1, 0, 0, 0, 0);
       setStrandColor(cloud2, 0, 0, 0, 0);
       setStrandColor(cloud3, 0, 0, 0, 0);
       setStrandColor(horizon, 0, 0, 0, 0);
 
-      Serial.println("All LEDs off, state reset to SEQ_OFF");
+      Serial.println("All LEDs off, all patches cleared, cloud states reset to deep blue");
       break;
-    case 5:  // Was case 0 - Test function
-      Serial.println("Setting CLOUD_1 to white");
-      setStrandColor(cloud1, 255, 255, 255, 255);
+    case 5:  // Phase 2 Test: Single patch fade on CLOUD_1
+      {
+        Serial.println("========================================");
+        Serial.println("PAD 5 - SINGLE PATCH FADE TEST (CLOUD_1)");
+        Serial.println("Testing transparent-to-opaque blend with brightness dip");
+        Serial.println("========================================");
+
+        // Stop any running progressions
+        progState.isAnimating = false;
+
+        // Initialize CLOUD_1 to deep blue (color 0) if not already
+        ColorGRBW startColor = getCloudPaletteColor(0);
+        for (int i = 0; i < cloud1State.numPixels; i++) {
+          cloud1State.currentPixelColors[i] = startColor;
+        }
+        setStrandColor(cloud1, startColor.r, startColor.g, startColor.b, startColor.w);
+
+        // Create a test patch in the center of CLOUD_1
+        // CLOUD_1 has 32 pixels, so center is pixel 16
+        // Patch size: 7 pixels
+        // Target color: index 15 (mid-range color)
+        // Fade duration: 5000ms (5 seconds)
+        createTestPatch(&cloud1State, 16, 7, 15, 5000);
+
+        Serial.println("Patch will fade in over 5 seconds.");
+        Serial.println("Watch for smooth color transition with subtle brightness dip.");
+        Serial.println("updateCloudPatches() will run automatically in loop().");
+      }
       break;
     case 6:  // Custom color test - set via serial input
       Serial.println("========================================");
@@ -1024,8 +1335,13 @@ void handleRelease(uint8_t pad) {
     case 4:
       // Reserved for RESET/OFF
       break;
-    case 5:  // Test: Turn off CLOUD_1
+    case 5:  // Clear test patches and turn off CLOUD_1
+      // Deactivate all patches on CLOUD_1
+      for (int i = 0; i < MAX_PATCHES_PER_CLOUD; i++) {
+        cloud1State.patches[i].active = false;
+      }
       setStrandColor(cloud1, 0, 0, 0, 0);
+      Serial.println("CLOUD_1 patches cleared and LEDs turned off");
       break;
     case 6:  // Test: Turn off CLOUD_2
       setStrandColor(cloud2, 0, 0, 0, 0);
