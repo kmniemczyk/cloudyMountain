@@ -82,9 +82,9 @@ struct ColorGRBW {
 };
 
 
-// NEW 40-color sunset/sunrise palette stored in PROGMEM to save SRAM
-// User-provided palette for smoother transitions
-const ColorGRBW PROGMEM sunsetPalette[40] = {
+// NEW 39-color sunset/sunrise palette stored in PROGMEM to save SRAM
+// User-provided palette for smoother transitions (indices 0-38)
+const ColorGRBW PROGMEM sunsetPalette[39] = {
 
 {0, 0, 80, 0}, //0
 {1, 0, 69, 3}, //1
@@ -157,18 +157,18 @@ const ColorGRBW PROGMEM cloudPalette[39] = {
   {50, 8, 0, 0},        // 24
   {40, 10, 1, 5},       // 25
   {50, 6, 0, 20},       // 26
-  {50, 3, 0, 0},        // 27
-  {50, 0, 0, 30},       // 28
+  {50, 3, 0, 30},        // 27
+  {50, 0, 0, 45},       // 28
   {75, 0, 10, 60},      // 29
   {75, 8, 10, 90},      // 30
   {80, 13, 8, 110},     // 31
-  {200, 0, 25, 100},    // 32
-  {200, 0, 25, 50},     // 33
-  {200, 0, 75, 200},    // 34
-  {150, 145, 175, 150}, // 35
-  {170, 150, 165, 140}, // 36
-  {140, 145, 175, 160}, // 37
-  {100, 100, 100, 200}  // 38
+  {200, 0, 25, 125},    // 32
+  {200, 0, 25, 140},     // 33
+  {200, 59, 125, 150},    // 34
+  {150, 145, 175, 180}, // 35
+  {170, 150, 165, 190}, // 36
+  {170, 180, 200, 200}, // 37
+  {200, 200, 200, 200}  // 38
 };
 
 // Helper function to read horizon color from PROGMEM
@@ -405,9 +405,9 @@ void createTestPatch(CloudState* cloudState, uint8_t centerPixel, uint8_t patchS
   Serial.print("  Center pixel: "); Serial.println(centerPixel);
   Serial.print("  Patch size: "); Serial.println(patchSize);
   Serial.print("  Target color index: "); Serial.println(colorIndex);
-  Serial.print("  Target color GRBW: (");
-  Serial.print(patch.targetColor.g); Serial.print(", ");
+  Serial.print("  Target color RGBW: (");
   Serial.print(patch.targetColor.r); Serial.print(", ");
+  Serial.print(patch.targetColor.g); Serial.print(", ");
   Serial.print(patch.targetColor.b); Serial.print(", ");
   Serial.print(patch.targetColor.w); Serial.println(")");
   Serial.print("  Fade duration: "); Serial.print(fadeDuration); Serial.println("ms");
@@ -500,6 +500,43 @@ void selectPatchColors(uint8_t horizonColorIndex, uint8_t *selectedColors) {
 
 // Trigger cloud patches based on current horizon color
 void triggerCloudPatchesForHorizonColor(uint8_t horizonColorIndex) {
+  // Special case: For the final color (38), create full-cloud patches
+  if (horizonColorIndex >= 38) {
+    // CLOUD_1 - full coverage
+    {
+      uint8_t centerPixel = CLOUD_1_PIXELS / 2;  // Center of cloud
+      uint8_t patchSize = CLOUD_1_PIXELS;         // Entire cloud
+      uint8_t colorIndex = 38;                     // Final daytime white (200,200,200,200)
+      uint16_t fadeDuration = 8000;                // 8 second fade for final transition
+
+      createTestPatch(&cloud1State, centerPixel, patchSize, colorIndex, fadeDuration);
+    }
+
+    // CLOUD_2 - full coverage
+    {
+      uint8_t centerPixel = CLOUD_2_PIXELS / 2;
+      uint8_t patchSize = CLOUD_2_PIXELS;
+      uint8_t colorIndex = 38;
+      uint16_t fadeDuration = 8000;                // 8 second fade
+
+      createTestPatch(&cloud2State, centerPixel, patchSize, colorIndex, fadeDuration);
+    }
+
+    // CLOUD_3 - full coverage
+    {
+      uint8_t centerPixel = CLOUD_3_PIXELS / 2;
+      uint8_t patchSize = CLOUD_3_PIXELS;
+      uint8_t colorIndex = 38;
+      uint16_t fadeDuration = 8000;                // 8 second fade
+
+      createTestPatch(&cloud3State, centerPixel, patchSize, colorIndex, fadeDuration);
+    }
+
+    Serial.println("Created FULL-CLOUD patches for final daytime color (index 38) - 8 second fade");
+    return;
+  }
+
+  // Normal behavior for all other colors
   // Select which zone to use based on horizon progression
   CloudZone zone = selectZoneForHorizonColor(horizonColorIndex);
 
@@ -691,16 +728,37 @@ void updateProgression() {
           }
           horizon.show();
 
-          // Apply brightness limiting to other strands only
-          applyBrightnessLimit();
-          if (brightnessScale < 1.0) {
-            applyBrightnessToStrand(cloud1, brightnessScale);
-            applyBrightnessToStrand(cloud2, brightnessScale);
-            applyBrightnessToStrand(cloud3, brightnessScale);
+          // Set all cloud pixels to final daytime white (cloudPalette[38])
+          ColorGRBW cloudDayColor = getCloudPaletteColor(38);
+
+          // Update cloud state arrays
+          for (int i = 0; i < CLOUD_1_PIXELS; i++) {
+            cloud1State.currentPixelColors[i] = cloudDayColor;
           }
-          cloud1.show();
-          cloud2.show();
-          cloud3.show();
+          for (int i = 0; i < CLOUD_2_PIXELS; i++) {
+            cloud2State.currentPixelColors[i] = cloudDayColor;
+          }
+          for (int i = 0; i < CLOUD_3_PIXELS; i++) {
+            cloud3State.currentPixelColors[i] = cloudDayColor;
+          }
+
+          // Set all cloud LED strands to final color
+          setStrandColor(cloud1, cloudDayColor.r, cloudDayColor.g, cloudDayColor.b, cloudDayColor.w);
+          setStrandColor(cloud2, cloudDayColor.r, cloudDayColor.g, cloudDayColor.b, cloudDayColor.w);
+          setStrandColor(cloud3, cloudDayColor.r, cloudDayColor.g, cloudDayColor.b, cloudDayColor.w);
+
+          // Deactivate all cloud patches since we're now in static DAY mode
+          for (int i = 0; i < MAX_PATCHES_PER_CLOUD; i++) {
+            cloud1State.patches[i].active = false;
+            cloud2State.patches[i].active = false;
+            cloud3State.patches[i].active = false;
+          }
+
+          Serial.print("DAY mode: Clouds set to cloudPalette[38] RGBW: (");
+          Serial.print(cloudDayColor.r); Serial.print(", ");
+          Serial.print(cloudDayColor.g); Serial.print(", ");
+          Serial.print(cloudDayColor.b); Serial.print(", ");
+          Serial.print(cloudDayColor.w); Serial.println(")");
         }
 
         progState.isAnimating = false;
@@ -716,41 +774,40 @@ void updateProgression() {
 
   // Special handling for DAY mode - display immediately and stop animating
   if (progState.currentSequence == SEQ_DAY && !progState.dayModeDisplayed) {
-    // Test: read palette entry 39 directly
-    ColorGRBW testColor = getPaletteColor(39);
-    Serial.print("Direct palette[39] read - G:");
-    Serial.print(testColor.g);
-    Serial.print(" R:");
+    // Test: read palette entry 38 (final sunset color)
+    ColorGRBW testColor = getPaletteColor(38);
+    Serial.print("Direct palette[38] read - R:");
     Serial.print(testColor.r);
+    Serial.print(" G:");
+    Serial.print(testColor.g);
     Serial.print(" B:");
     Serial.print(testColor.b);
     Serial.print(" W:");
     Serial.println(testColor.w);
 
     // Test: Try reading from different indices
-    Serial.println("Reading palette indices 36-39:");
-    for(int idx = 36; idx < 40; idx++) {
+    Serial.println("Reading sunset palette indices 36-38:");
+    for(int idx = 36; idx <= 38; idx++) {
       ColorGRBW test = getPaletteColor(idx);
       Serial.print("  [");
       Serial.print(idx);
-      Serial.print("] G:");
-      Serial.print(test.g);
-      Serial.print(" R:");
+      Serial.print("] R:");
       Serial.print(test.r);
+      Serial.print(" G:");
+      Serial.print(test.g);
       Serial.print(" B:");
       Serial.print(test.b);
       Serial.print(" W:");
       Serial.println(test.w);
     }
 
-    // FIX: Use palette index 38 (the 39th entry) as the daytime color
-    // Index 39 appears to be reading past array bounds
+    // Use palette index 38 (the final sunset color) as the daytime horizon color
     ColorGRBW c = getPaletteColor(38);
 
-    Serial.print("Using hardcoded daytime color - G:");
-    Serial.print(c.g);
-    Serial.print(" R:");
+    Serial.print("Using daytime horizon color - R:");
     Serial.print(c.r);
+    Serial.print(" G:");
+    Serial.print(c.g);
     Serial.print(" B:");
     Serial.print(c.b);
     Serial.print(" W:");
@@ -765,6 +822,48 @@ void updateProgression() {
     horizon.show();
 
     Serial.println("Horizon strand updated and shown");
+
+    // Set all cloud pixels to final daytime white (cloudPalette[38])
+    ColorGRBW cloudDayColor = getCloudPaletteColor(38);
+
+    // Update cloud state arrays
+    for (int i = 0; i < CLOUD_1_PIXELS; i++) {
+      cloud1State.currentPixelColors[i] = cloudDayColor;
+    }
+    for (int i = 0; i < CLOUD_2_PIXELS; i++) {
+      cloud2State.currentPixelColors[i] = cloudDayColor;
+    }
+    for (int i = 0; i < CLOUD_3_PIXELS; i++) {
+      cloud3State.currentPixelColors[i] = cloudDayColor;
+    }
+
+    // Set all cloud LED strands to final color (RGBW order)
+    for (int i = 0; i < CLOUD_1_PIXELS; i++) {
+      cloud1.setPixelColor(i, cloud1.Color(cloudDayColor.r, cloudDayColor.g, cloudDayColor.b, cloudDayColor.w));
+    }
+    for (int i = 0; i < CLOUD_2_PIXELS; i++) {
+      cloud2.setPixelColor(i, cloud2.Color(cloudDayColor.r, cloudDayColor.g, cloudDayColor.b, cloudDayColor.w));
+    }
+    for (int i = 0; i < CLOUD_3_PIXELS; i++) {
+      cloud3.setPixelColor(i, cloud3.Color(cloudDayColor.r, cloudDayColor.g, cloudDayColor.b, cloudDayColor.w));
+    }
+
+    cloud1.show();
+    cloud2.show();
+    cloud3.show();
+
+    // Deactivate all cloud patches since we're now in static DAY mode
+    for (int i = 0; i < MAX_PATCHES_PER_CLOUD; i++) {
+      cloud1State.patches[i].active = false;
+      cloud2State.patches[i].active = false;
+      cloud3State.patches[i].active = false;
+    }
+
+    Serial.print("Clouds set to cloudPalette[38] RGBW: (");
+    Serial.print(cloudDayColor.r); Serial.print(", ");
+    Serial.print(cloudDayColor.g); Serial.print(", ");
+    Serial.print(cloudDayColor.b); Serial.print(", ");
+    Serial.print(cloudDayColor.w); Serial.println(")");
 
     progState.dayModeDisplayed = true;
     progState.isAnimating = false;
@@ -1177,42 +1276,44 @@ void handleTouch(uint8_t pad) {
       transitionToSequence(SEQ_DAY);
       break;
     case 4:  // RESET/OFF - Turn everything off and reset state
-      Serial.println("RESET/OFF - Turning off all LEDs and stopping sequences");
+      {
+        Serial.println("RESET/OFF - Turning off all LEDs and stopping sequences");
 
-      // Stop any running sequences
-      progState.isAnimating = false;
-      progState.currentSequence = SEQ_OFF;
-      progState.progressPercent = 0.0;
+        // Stop any running sequences
+        progState.isAnimating = false;
+        progState.currentSequence = SEQ_OFF;
+        progState.progressPercent = 0.0;
 
-      // HARD RESET: Clear all cloud patches and reset to starting state
-      Serial.println("Clearing all cloud patches...");
+        // HARD RESET: Clear all cloud patches and reset to starting state
+        Serial.println("Clearing all cloud patches...");
 
-      // Deactivate all patches on all clouds
-      for (int i = 0; i < MAX_PATCHES_PER_CLOUD; i++) {
-        cloud1State.patches[i].active = false;
-        cloud2State.patches[i].active = false;
-        cloud3State.patches[i].active = false;
+        // Deactivate all patches on all clouds
+        for (int i = 0; i < MAX_PATCHES_PER_CLOUD; i++) {
+          cloud1State.patches[i].active = false;
+          cloud2State.patches[i].active = false;
+          cloud3State.patches[i].active = false;
+        }
+
+        // Reset all cloud pixels to starting deep blue (cloud color 0)
+        ColorGRBW startColor = getCloudPaletteColor(0);
+        for (int i = 0; i < CLOUD_1_PIXELS; i++) {
+          cloud1State.currentPixelColors[i] = startColor;
+        }
+        for (int i = 0; i < CLOUD_2_PIXELS; i++) {
+          cloud2State.currentPixelColors[i] = startColor;
+        }
+        for (int i = 0; i < CLOUD_3_PIXELS; i++) {
+          cloud3State.currentPixelColors[i] = startColor;
+        }
+
+        // Turn off all LED strands
+        setStrandColor(cloud1, 0, 0, 0, 0);
+        setStrandColor(cloud2, 0, 0, 0, 0);
+        setStrandColor(cloud3, 0, 0, 0, 0);
+        setStrandColor(horizon, 0, 0, 0, 0);
+
+        Serial.println("All LEDs off, all patches cleared, cloud states reset to deep blue");
       }
-
-      // Reset all cloud pixels to starting deep blue (cloud color 0)
-      ColorGRBW startColor = getCloudPaletteColor(0);
-      for (int i = 0; i < CLOUD_1_PIXELS; i++) {
-        cloud1State.currentPixelColors[i] = startColor;
-      }
-      for (int i = 0; i < CLOUD_2_PIXELS; i++) {
-        cloud2State.currentPixelColors[i] = startColor;
-      }
-      for (int i = 0; i < CLOUD_3_PIXELS; i++) {
-        cloud3State.currentPixelColors[i] = startColor;
-      }
-
-      // Turn off all LED strands
-      setStrandColor(cloud1, 0, 0, 0, 0);
-      setStrandColor(cloud2, 0, 0, 0, 0);
-      setStrandColor(cloud3, 0, 0, 0, 0);
-      setStrandColor(horizon, 0, 0, 0, 0);
-
-      Serial.println("All LEDs off, all patches cleared, cloud states reset to deep blue");
       break;
     case 5:  // Phase 2 Test: Single patch fade on CLOUD_1
       {
