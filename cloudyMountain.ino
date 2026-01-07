@@ -1,4 +1,6 @@
-//HORIZON ONLY
+//test the storm more and it made pad 8 the turn it on pad and that needs to change
+//then fix the end of the dawn sequence. maybe brightness issue?
+//need to invert cloud top /bottom
 
 #include <Wire.h>
 #include <Adafruit_MPR121.h>
@@ -35,6 +37,25 @@
 // Fast test durations (for pad 1 quick testing)
 #define TEST_HOLD_DURATION_MS 10000          // 10 seconds hold
 #define TEST_PROGRESSION_DURATION_MS 230000  // 3min 50sec progression (total 4min)
+
+// Storm timing constants (production)
+#define STORM_DIM_DURATION_MS 60000           // 1 minute dim to 25%
+#define STORM_CLEAR_DURATION_MS 60000         // 1 minute return to 100%
+#define STORM_MIN_DURATION_MS 300000          // 5 minutes minimum
+#define STORM_MAX_DURATION_MS 600000          // 10 minutes maximum
+#define STORM_MIN_CHECK_INTERVAL_MS 3600000   // 1 hour between checks
+#define STORM_TRIGGER_PROBABILITY 30          // 30% chance when eligible
+
+// Lightning timing
+#define LIGHTNING_MIN_INTERVAL_MS 800         // Min time between strikes
+#define LIGHTNING_MAX_INTERVAL_MS 8000        // Max time between strikes
+#define LIGHTNING_FLASH_DURATION_MS 150       // Flash duration
+#define LIGHTNING_MULTI_FLASH_CHANCE 40       // 40% chance of 2-3 flashes
+
+// Test mode (fast timing for pad 5)
+#define TEST_STORM_DIM_DURATION_MS 5000       // 5 seconds
+#define TEST_STORM_ACTIVE_DURATION_MS 30000   // 30 seconds
+#define TEST_STORM_CLEAR_DURATION_MS 5000     // 5 seconds
 
 // Initialize NeoPixel objects (SK6812 RGBW type - but chips are wired as GRBW)
 Adafruit_NeoPixel cloud1 = Adafruit_NeoPixel(CLOUD_1_PIXELS, CLOUD_1_PIN, NEO_GRBW + NEO_KHZ800);
@@ -73,7 +94,10 @@ typedef enum {
   SEQ_DAY,               // Daytime mode
   SEQ_SUNSET_PROG,       // Sunset progression (reverse)
   SEQ_TEST_SUNRISE_HOLD, // Fast test hold (10sec)
-  SEQ_TEST_SUNRISE_PROG  // Fast test progression (3min 50sec)
+  SEQ_TEST_SUNRISE_PROG, // Fast test progression (3min 50sec)
+  SEQ_STORM_DIM,         // Dimming clouds to 25% (60 seconds)
+  SEQ_STORM_ACTIVE,      // Active lightning strikes (5-10 minutes)
+  SEQ_STORM_CLEAR        // Returning to normal brightness (60 seconds)
 } SequenceState;
 
 // Color structure for RGBW LEDs (SK6812RGBW chip order)
@@ -160,15 +184,15 @@ const ColorGRBW PROGMEM cloudPalette[39] = {
   {50, 3, 0, 30},        // 27
   {50, 0, 0, 45},       // 28
   {75, 0, 10, 60},      // 29
-  {75, 8, 10, 90},      // 30
-  {80, 13, 8, 110},     // 31
-  {200, 0, 25, 125},    // 32
-  {200, 0, 25, 140},     // 33
-  {200, 59, 125, 150},    // 34
-  {150, 145, 175, 180}, // 35
-  {170, 150, 165, 190}, // 36
-  {170, 180, 200, 200}, // 37
-  {200, 200, 200, 200}  // 38
+  {75, 8, 10, 105},      // 30
+  {80, 13, 8, 130},     // 31
+  {200, 0, 25, 140},    // 32
+  {200, 0, 25, 155},     // 33
+  {200, 59, 125, 165},    // 34
+  {170, 170, 175, 175}, // 35
+  {180, 180, 180, 180}, // 36
+  {180, 180, 180, 180}, // 37
+  {180, 180, 180, 180}  // 38
 };
 
 // Helper function to read horizon color from PROGMEM
@@ -184,6 +208,27 @@ ColorGRBW getCloudPaletteColor(uint8_t index) {
   if (index > 38) index = 38;  // Clamp to 39-color range (0-38)
   ColorGRBW color;
   memcpy_P(&color, &cloudPalette[index], sizeof(ColorGRBW));
+  return color;
+}
+
+// Storm color palette - 8 colors for storm clouds and lightning intensities
+// Stored in PROGMEM to save SRAM
+const ColorGRBW PROGMEM stormPalette[8] = {
+  {25, 25, 35, 10},      // 0: Dark stormy blue-gray
+  {30, 30, 40, 15},      // 1: Lighter storm cloud
+  {35, 35, 45, 20},      // 2: Medium storm cloud
+  {255, 255, 255, 255},  // 3: Bright white (max intensity)
+  {240, 240, 255, 240},  // 4: Bright lightning (close) - increased
+  {200, 200, 230, 200},  // 5: Medium lightning - increased
+  {160, 160, 200, 160},  // 6: Dim lightning (distant) - increased
+  {120, 120, 160, 120}   // 7: Very dim lightning - increased
+};
+
+// Helper function to read storm color from PROGMEM
+ColorGRBW getStormPaletteColor(uint8_t index) {
+  if (index > 7) index = 7;  // Clamp to 8-color range (0-7)
+  ColorGRBW color;
+  memcpy_P(&color, &stormPalette[index], sizeof(ColorGRBW));
   return color;
 }
 
@@ -230,6 +275,29 @@ struct ProgressionState {
 
 // Global progression state
 ProgressionState progState = {SEQ_OFF, 0.0, 0, false, false};
+
+// Storm state structure for tracking storm progression and lightning
+struct StormState {
+  bool stormEnabled;                    // Can storms auto-trigger?
+  unsigned long lastStormCheckTime;     // Last random check
+  unsigned long stormPhaseStartTime;    // Phase timing
+  unsigned long stormDuration;          // Active phase duration
+  unsigned long nextLightningTime;      // When next strike happens
+  unsigned long lightningFlashStartTime;// Current flash timing
+  uint8_t lightningFlashCount;          // Multi-flash tracking
+  uint8_t currentFlashNumber;           // Which flash in sequence
+  uint8_t strikeType;                   // 0=single, 1=multi-cloud
+  uint8_t strikeCloud;                  // Target cloud (single)
+  uint8_t strikeCloudStart;             // Arc start (multi)
+  uint8_t strikeCloudEnd;               // Arc end (multi)
+  uint8_t strikeIntensity;              // Color index 3-7
+  uint8_t strikePixels[3];              // Affected pixels
+  uint8_t strikeNumPixels;              // How many pixels lit
+  float preStormBrightness;             // Save for restore
+};
+
+// Global storm state
+StormState stormState = {false, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 3, {0,0,0}, 0, 1.0};
 
 // Cloud patch system - tracks individual color patches fading in on clouds
 #define MAX_PATCHES_PER_CLOUD 15  // Max simultaneous patches per cloud strand
@@ -647,6 +715,11 @@ void transitionToSequence(SequenceState newState) {
   // Reset horizon color tracking for patch triggering
   lastHorizonColorIndex = 0;
 
+  // Reset storm check timer when entering DAY mode
+  if (newState == SEQ_DAY) {
+    stormState.lastStormCheckTime = millis();
+  }
+
   Serial.print("Transitioning to sequence: ");
   Serial.println(newState);
 }
@@ -1014,6 +1087,458 @@ void updateProgression() {
   }
 }
 
+// ========== STORM SYSTEM FUNCTIONS ==========
+
+// Calculate storm brightness based on current phase and progress
+// Returns 0.25 during DIM/ACTIVE phases, ramps during transitions
+float getStormBrightness() {
+  if (progState.currentSequence != SEQ_STORM_DIM &&
+      progState.currentSequence != SEQ_STORM_ACTIVE &&
+      progState.currentSequence != SEQ_STORM_CLEAR) {
+    return 1.0;  // Not in storm, full brightness
+  }
+
+  unsigned long elapsed = millis() - stormState.stormPhaseStartTime;
+  unsigned long phaseDuration;
+
+  // Determine which phase we're in
+  if (progState.currentSequence == SEQ_STORM_DIM) {
+    // Dimming phase: 1.0 → 0.15
+    phaseDuration = (stormState.stormDuration == TEST_STORM_ACTIVE_DURATION_MS) ?
+                    TEST_STORM_DIM_DURATION_MS : STORM_DIM_DURATION_MS;
+    float progress = min(1.0f, (float)elapsed / (float)phaseDuration);
+    return 1.0 - (progress * 0.85);  // 1.0 → 0.15
+  }
+  else if (progState.currentSequence == SEQ_STORM_ACTIVE) {
+    // Active phase: hold at 0.15
+    return 0.15;
+  }
+  else if (progState.currentSequence == SEQ_STORM_CLEAR) {
+    // Clearing phase: 0.15 → 1.0
+    phaseDuration = (stormState.stormDuration == TEST_STORM_ACTIVE_DURATION_MS) ?
+                    TEST_STORM_CLEAR_DURATION_MS : STORM_CLEAR_DURATION_MS;
+    float progress = min(1.0f, (float)elapsed / (float)phaseDuration);
+    return 0.15 + (progress * 0.85);  // 0.15 → 1.0
+  }
+
+  return 1.0;  // Default full brightness
+}
+
+// Apply storm dimming to all clouds AND horizon
+void applyStormDimming() {
+  float brightness = getStormBrightness();
+
+  // Dim all three clouds
+  for (int i = 0; i < cloud1State.numPixels; i++) {
+    ColorGRBW c = cloud1State.currentPixelColors[i];
+    cloud1.setPixelColor(i, cloud1.Color(
+      c.r * brightness,
+      c.g * brightness,
+      c.b * brightness,
+      c.w * brightness
+    ));
+  }
+
+  for (int i = 0; i < cloud2State.numPixels; i++) {
+    ColorGRBW c = cloud2State.currentPixelColors[i];
+    cloud2.setPixelColor(i, cloud2.Color(
+      c.r * brightness,
+      c.g * brightness,
+      c.b * brightness,
+      c.w * brightness
+    ));
+  }
+
+  for (int i = 0; i < cloud3State.numPixels; i++) {
+    ColorGRBW c = cloud3State.currentPixelColors[i];
+    cloud3.setPixelColor(i, cloud3.Color(
+      c.r * brightness,
+      c.g * brightness,
+      c.b * brightness,
+      c.w * brightness
+    ));
+  }
+
+  // Dim horizon too
+  for (int i = 0; i < HORIZON_PIXELS; i++) {
+    uint32_t color = horizon.getPixelColor(i);
+    uint8_t r = ((color >> 24) & 0xFF) * brightness;
+    uint8_t g = ((color >> 16) & 0xFF) * brightness;
+    uint8_t b = ((color >> 8) & 0xFF) * brightness;
+    uint8_t w = (color & 0xFF) * brightness;
+    horizon.setPixelColor(i, horizon.Color(r, g, b, w));
+  }
+
+  // Show all strands
+  cloud1.show();
+  cloud2.show();
+  cloud3.show();
+  horizon.show();
+}
+
+// Start a storm sequence
+void startStorm(bool testMode) {
+  // Guard against double-starting
+  if (progState.currentSequence == SEQ_STORM_DIM ||
+      progState.currentSequence == SEQ_STORM_ACTIVE ||
+      progState.currentSequence == SEQ_STORM_CLEAR) {
+    Serial.println("ERROR: Storm already active - ignoring request");
+    return;
+  }
+
+  Serial.println("========================================");
+  Serial.println(testMode ? "STARTING TEST STORM" : "STARTING STORM");
+
+  // Save current brightness
+  stormState.preStormBrightness = 1.0;
+
+  // Set storm duration
+  if (testMode) {
+    stormState.stormDuration = TEST_STORM_ACTIVE_DURATION_MS;
+    Serial.println("Test mode: 5s dim + 30s active + 5s clear = 40s total");
+  } else {
+    stormState.stormDuration = random(STORM_MIN_DURATION_MS, STORM_MAX_DURATION_MS + 1);
+    Serial.print("Production mode: ");
+    Serial.print(stormState.stormDuration / 60000);
+    Serial.println(" minute active phase");
+  }
+
+  // Initialize storm timing
+  stormState.stormPhaseStartTime = millis();
+  stormState.nextLightningTime = 0;
+  stormState.lightningFlashStartTime = 0;
+
+  // Transition to dimming phase
+  progState.currentSequence = SEQ_STORM_DIM;
+  progState.isAnimating = false;  // We'll handle storm updates separately
+
+  // Schedule first lightning strike (will be triggered during ACTIVE phase)
+  scheduleNextLightning();
+
+  Serial.println("Storm started - entering DIM phase");
+  Serial.println("========================================");
+}
+
+// End storm and return to DAY mode
+void endStorm() {
+  Serial.println("========================================");
+  Serial.println("ENDING STORM - Returning to DAY mode");
+  Serial.println("========================================");
+
+  // Restore brightness
+  stormState.preStormBrightness = 1.0;
+
+  // Clear storm state
+  stormState.nextLightningTime = 0;
+  stormState.lightningFlashStartTime = 0;
+
+  // Return to DAY mode
+  transitionToSequence(SEQ_DAY);
+}
+
+// Update storm state machine - handles all three storm phases
+void updateStorm() {
+  unsigned long elapsed = millis() - stormState.stormPhaseStartTime;
+  unsigned long phaseDuration;
+
+  // Handle each storm phase
+  if (progState.currentSequence == SEQ_STORM_DIM) {
+    // Dimming phase: 100% → 25%
+    phaseDuration = (stormState.stormDuration == TEST_STORM_ACTIVE_DURATION_MS) ?
+                    TEST_STORM_DIM_DURATION_MS : STORM_DIM_DURATION_MS;
+
+    // Apply dimming
+    applyStormDimming();
+
+    // Check if dim phase complete
+    if (elapsed >= phaseDuration) {
+      Serial.println("========================================");
+      Serial.println("DIM phase complete - entering ACTIVE phase");
+      Serial.print("Active phase duration: ");
+      Serial.print(stormState.stormDuration / 1000);
+      Serial.println(" seconds");
+      Serial.println("========================================");
+
+      // Transition to active phase
+      progState.currentSequence = SEQ_STORM_ACTIVE;
+      stormState.stormPhaseStartTime = millis();
+    }
+  }
+  else if (progState.currentSequence == SEQ_STORM_ACTIVE) {
+    // Active phase: maintain 25% brightness with lightning
+    unsigned long currentTime = millis();
+
+    // Check if we have an active flash that needs to be cleared
+    if (stormState.lightningFlashStartTime > 0) {
+      unsigned long flashElapsed = currentTime - stormState.lightningFlashStartTime;
+
+      if (flashElapsed >= LIGHTNING_FLASH_DURATION_MS) {
+        // Flash duration complete - clear it
+        clearLightning();
+
+        // Increment flash counter
+        stormState.currentFlashNumber++;
+
+        // Check if this was a multi-flash and more flashes remain
+        if (stormState.currentFlashNumber < stormState.lightningFlashCount) {
+          // Schedule next flash in the sequence (short delay: 50-200ms)
+          stormState.nextLightningTime = currentTime + random(50, 201);
+          Serial.print("Multi-flash continues (");
+          Serial.print(stormState.currentFlashNumber + 1);
+          Serial.print("/");
+          Serial.print(stormState.lightningFlashCount);
+          Serial.println(")");
+        } else {
+          // All flashes complete - schedule next strike
+          scheduleNextLightning();
+        }
+      }
+    }
+    // Check if it's time for next lightning strike
+    else if (currentTime >= stormState.nextLightningTime) {
+      // Trigger the lightning flash
+      triggerLightning();
+    }
+    else {
+      // No flash active - just maintain storm dimming
+      applyStormDimming();
+    }
+
+    // Check if active phase complete
+    if (elapsed >= stormState.stormDuration) {
+      Serial.println("========================================");
+      Serial.println("ACTIVE phase complete - entering CLEAR phase");
+      Serial.println("========================================");
+
+      // Transition to clearing phase
+      progState.currentSequence = SEQ_STORM_CLEAR;
+      stormState.stormPhaseStartTime = millis();
+    }
+  }
+  else if (progState.currentSequence == SEQ_STORM_CLEAR) {
+    // Clearing phase: 25% → 100%
+    phaseDuration = (stormState.stormDuration == TEST_STORM_ACTIVE_DURATION_MS) ?
+                    TEST_STORM_CLEAR_DURATION_MS : STORM_CLEAR_DURATION_MS;
+
+    // Apply dimming (brightness will ramp up)
+    applyStormDimming();
+
+    // Check if clear phase complete
+    if (elapsed >= phaseDuration) {
+      Serial.println("CLEAR phase complete");
+      endStorm();
+    }
+  }
+}
+
+// Trigger a lightning flash based on scheduled parameters
+void triggerLightning() {
+  ColorGRBW lightningColor = getStormPaletteColor(stormState.strikeIntensity);
+
+  if (stormState.strikeType == 0) {
+    // Single cloud strike - flash selected pixels
+    Adafruit_NeoPixel* targetCloud;
+    CloudState* targetState;
+
+    switch(stormState.strikeCloud) {
+      case 0:
+        targetCloud = &cloud1;
+        targetState = &cloud1State;
+        break;
+      case 1:
+        targetCloud = &cloud2;
+        targetState = &cloud2State;
+        break;
+      case 2:
+        targetCloud = &cloud3;
+        targetState = &cloud3State;
+        break;
+      default:
+        targetCloud = &cloud1;
+        targetState = &cloud1State;
+        break;
+    }
+
+    // Set selected pixels to lightning color
+    for (int i = 0; i < stormState.strikeNumPixels; i++) {
+      uint8_t pixel = stormState.strikePixels[i];
+      targetCloud->setPixelColor(pixel, targetCloud->Color(
+        lightningColor.r, lightningColor.g, lightningColor.b, lightningColor.w
+      ));
+    }
+
+    targetCloud->show();
+  } else {
+    // Multi-cloud arc - flash one pixel on start cloud and one on end cloud
+    Adafruit_NeoPixel* cloudA;
+    Adafruit_NeoPixel* cloudB;
+
+    switch(stormState.strikeCloudStart) {
+      case 0: cloudA = &cloud1; break;
+      case 1: cloudA = &cloud2; break;
+      case 2: cloudA = &cloud3; break;
+      default: cloudA = &cloud1; break;
+    }
+
+    switch(stormState.strikeCloudEnd) {
+      case 0: cloudB = &cloud1; break;
+      case 1: cloudB = &cloud2; break;
+      case 2: cloudB = &cloud3; break;
+      default: cloudB = &cloud1; break;
+    }
+
+    // Flash random pixel on each cloud
+    uint8_t pixelA = random(cloudA->numPixels());
+    uint8_t pixelB = random(cloudB->numPixels());
+
+    cloudA->setPixelColor(pixelA, cloudA->Color(
+      lightningColor.r, lightningColor.g, lightningColor.b, lightningColor.w
+    ));
+    cloudB->setPixelColor(pixelB, cloudB->Color(
+      lightningColor.r, lightningColor.g, lightningColor.b, lightningColor.w
+    ));
+
+    cloudA->show();
+    cloudB->show();
+  }
+
+  // Record flash start time
+  stormState.lightningFlashStartTime = millis();
+
+  Serial.print("FLASH! Type: ");
+  Serial.print(stormState.strikeType == 0 ? "single" : "arc");
+  Serial.print(", Intensity: ");
+  Serial.println(stormState.strikeIntensity);
+}
+
+// Clear lightning flash and return to storm-dimmed state
+void clearLightning() {
+  // Simply re-apply storm dimming which will restore the 25% brightness
+  applyStormDimming();
+
+  // Reset flash tracking
+  stormState.lightningFlashStartTime = 0;
+
+  Serial.println("Flash cleared");
+}
+
+// Check if storm should trigger randomly (called from loop when in DAY mode)
+void checkStormTrigger() {
+  if (!stormState.stormEnabled) {
+    return;  // Auto-triggering disabled
+  }
+
+  unsigned long currentTime = millis();
+  unsigned long timeSinceLastCheck = currentTime - stormState.lastStormCheckTime;
+
+  // Only check once per interval (default 1 hour)
+  if (timeSinceLastCheck >= STORM_MIN_CHECK_INTERVAL_MS) {
+    // Roll for storm trigger (30% probability)
+    if (random(100) < STORM_TRIGGER_PROBABILITY) {
+      Serial.println("========================================");
+      Serial.println("RANDOM STORM TRIGGERED!");
+      Serial.println("========================================");
+      startStorm(false);  // false = production mode
+    } else {
+      Serial.println("Storm check: No storm triggered");
+    }
+
+    // Update last check time
+    stormState.lastStormCheckTime = currentTime;
+  }
+}
+
+// Schedule the next lightning strike with random parameters
+void scheduleNextLightning() {
+  // Choose strike type: 60% single cloud, 40% multi-cloud arc
+  int strikeTypeRoll = random(100);
+  if (strikeTypeRoll < 60) {
+    // Single cloud strike
+    stormState.strikeType = 0;
+
+    // Pick random cloud (0=cloud1, 1=cloud2, 2=cloud3)
+    stormState.strikeCloud = random(3);
+
+    // Pick 1-3 random pixels on that cloud
+    stormState.strikeNumPixels = random(1, 4);
+
+    uint8_t maxPixels;
+    switch(stormState.strikeCloud) {
+      case 0: maxPixels = CLOUD_1_PIXELS; break;
+      case 1: maxPixels = CLOUD_2_PIXELS; break;
+      case 2: maxPixels = CLOUD_3_PIXELS; break;
+      default: maxPixels = CLOUD_1_PIXELS; break;
+    }
+
+    // Pick random pixels (ensure they're different)
+    for (int i = 0; i < stormState.strikeNumPixels; i++) {
+      stormState.strikePixels[i] = random(maxPixels);
+    }
+
+    Serial.print("Scheduled SINGLE-CLOUD strike: cloud ");
+    Serial.print(stormState.strikeCloud);
+    Serial.print(", ");
+    Serial.print(stormState.strikeNumPixels);
+    Serial.println(" pixels");
+  } else {
+    // Multi-cloud arc strike
+    stormState.strikeType = 1;
+
+    // Pick 2 different clouds for arc
+    stormState.strikeCloudStart = random(3);
+    stormState.strikeCloudEnd = random(3);
+
+    // Ensure they're different
+    while (stormState.strikeCloudEnd == stormState.strikeCloudStart) {
+      stormState.strikeCloudEnd = random(3);
+    }
+
+    // Pick 1 pixel on each cloud (total 2-3 pixels depending on if we span 2 or 3 clouds)
+    stormState.strikeNumPixels = 2;  // Will be 2-3 clouds
+
+    Serial.print("Scheduled MULTI-CLOUD arc: clouds ");
+    Serial.print(stormState.strikeCloudStart);
+    Serial.print(" -> ");
+    Serial.println(stormState.strikeCloudEnd);
+  }
+
+  // Choose intensity: 40% bright (3-4), 40% medium (5-6), 20% dim (7)
+  int intensityRoll = random(100);
+  if (intensityRoll < 40) {
+    // Bright lightning (close)
+    stormState.strikeIntensity = random(3, 5);  // 3 or 4
+  } else if (intensityRoll < 80) {
+    // Medium lightning
+    stormState.strikeIntensity = random(5, 7);  // 5 or 6
+  } else {
+    // Dim lightning (distant)
+    stormState.strikeIntensity = 7;
+  }
+
+  Serial.print("Intensity: index ");
+  Serial.println(stormState.strikeIntensity);
+
+  // Decide if this is a multi-flash strike (40% chance of 2-3 flashes)
+  if (random(100) < LIGHTNING_MULTI_FLASH_CHANCE) {
+    stormState.lightningFlashCount = random(2, 4);  // 2 or 3 flashes
+    Serial.print("Multi-flash: ");
+    Serial.print(stormState.lightningFlashCount);
+    Serial.println(" flashes");
+  } else {
+    stormState.lightningFlashCount = 1;
+  }
+
+  stormState.currentFlashNumber = 0;
+
+  // Schedule timing: random interval between strikes (800-8000ms)
+  unsigned long interval = random(LIGHTNING_MIN_INTERVAL_MS, LIGHTNING_MAX_INTERVAL_MS + 1);
+  stormState.nextLightningTime = millis() + interval;
+
+  Serial.print("Next strike in ");
+  Serial.print(interval);
+  Serial.println("ms");
+}
+
 void setup() {
   // Initialize serial communication for debugging
   Serial.begin(115200);
@@ -1022,6 +1547,9 @@ void setup() {
   }
 
   Serial.println("CloudyMountain Initializing...");
+
+  // Initialize random seed for varied lightning patterns
+  randomSeed(analogRead(A0));  // Use floating analog pin for entropy
 
   // Initialize I2C bus
   Wire.begin();
@@ -1242,10 +1770,23 @@ void loop() {
     updateProgression();
   }
 
-  // Update cloud patch animations (Phase 2)
-  updateCloudPatches(cloud1State, cloud1);
-  updateCloudPatches(cloud2State, cloud2);
-  updateCloudPatches(cloud3State, cloud3);
+  // Check for random storm trigger when in DAY mode
+  if (progState.currentSequence == SEQ_DAY) {
+    checkStormTrigger();
+  }
+
+  // Update storm or cloud patches (mutually exclusive)
+  if (progState.currentSequence == SEQ_STORM_DIM ||
+      progState.currentSequence == SEQ_STORM_ACTIVE ||
+      progState.currentSequence == SEQ_STORM_CLEAR) {
+    // Storm is active - update storm state machine
+    updateStorm();
+  } else {
+    // Normal mode - update cloud patch animations
+    updateCloudPatches(cloud1State, cloud1);
+    updateCloudPatches(cloud2State, cloud2);
+    updateCloudPatches(cloud3State, cloud3);
+  }
 
   // Small delay to avoid overwhelming the serial output
   delay(10);
@@ -1284,6 +1825,10 @@ void handleTouch(uint8_t pad) {
         progState.currentSequence = SEQ_OFF;
         progState.progressPercent = 0.0;
 
+        // Clear storm state
+        stormState.lightningFlashStartTime = 0;
+        stormState.nextLightningTime = 0;
+
         // HARD RESET: Clear all cloud patches and reset to starting state
         Serial.println("Clearing all cloud patches...");
 
@@ -1315,34 +1860,9 @@ void handleTouch(uint8_t pad) {
         Serial.println("All LEDs off, all patches cleared, cloud states reset to deep blue");
       }
       break;
-    case 5:  // Phase 2 Test: Single patch fade on CLOUD_1
-      {
-        Serial.println("========================================");
-        Serial.println("PAD 5 - SINGLE PATCH FADE TEST (CLOUD_1)");
-        Serial.println("Testing transparent-to-opaque blend with brightness dip");
-        Serial.println("========================================");
-
-        // Stop any running progressions
-        progState.isAnimating = false;
-
-        // Initialize CLOUD_1 to deep blue (color 0) if not already
-        ColorGRBW startColor = getCloudPaletteColor(0);
-        for (int i = 0; i < cloud1State.numPixels; i++) {
-          cloud1State.currentPixelColors[i] = startColor;
-        }
-        setStrandColor(cloud1, startColor.r, startColor.g, startColor.b, startColor.w);
-
-        // Create a test patch in the center of CLOUD_1
-        // CLOUD_1 has 32 pixels, so center is pixel 16
-        // Patch size: 7 pixels
-        // Target color: index 15 (mid-range color)
-        // Fade duration: 5000ms (5 seconds)
-        createTestPatch(&cloud1State, 16, 7, 15, 5000);
-
-        Serial.println("Patch will fade in over 5 seconds.");
-        Serial.println("Watch for smooth color transition with subtle brightness dip.");
-        Serial.println("updateCloudPatches() will run automatically in loop().");
-      }
+    case 5:  // Storm test mode (fast timing)
+      Serial.println("Starting TEST STORM (fast timing)");
+      startStorm(true);  // true = test mode
       break;
     case 6:  // Custom color test - set via serial input
       Serial.println("========================================");
@@ -1408,6 +1928,16 @@ void handleTouch(uint8_t pad) {
         if (cloudTestColorIndex >= 39) {
           cloudTestColorIndex = 0;
         }
+      }
+      break;
+    case 8:  // Toggle storm auto-triggering
+      stormState.stormEnabled = !stormState.stormEnabled;
+      Serial.println("========================================");
+      Serial.print("Storm auto-trigger: ");
+      Serial.println(stormState.stormEnabled ? "ENABLED" : "DISABLED");
+      Serial.println("========================================");
+      if (stormState.stormEnabled) {
+        stormState.lastStormCheckTime = millis();
       }
       break;
     default:
