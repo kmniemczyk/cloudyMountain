@@ -1,26 +1,609 @@
-Brightness Control System
-Power Budget: Set to 750 total brightness units across all LEDs (defined at cloudyMountain.ino:18) How it works:
-cloudyMountain.ino:143-179 - calculateTotalBrightness() sums up all GRBW values across all 177 pixels
-cloudyMountain.ino:182-194 - applyBrightnessLimit() calculates if scaling is needed
-cloudyMountain.ino:197-252 - setStrandColor() automatically enforces the limit
-Key features:
-When total brightness exceeds 28000 (60%), all LEDs are scaled down proportionally
-Color ratios are preserved (colors don't shift)
-Works automatically - you don't need to think about it
-Serial monitor shows the scaling percentage when limiting occurs
-Won't interfere with animations or other effects you add later - it applies uniformly to all pixels
-Example: If you set all pixels to white (255,255,255,255 = 1020 per pixel), the system would detect the total exceeds 750 and automatically scale everything down to stay within your power budget. You can adjust MAX_TOTAL_BRIGHTNESS at any time if you find 750 is too restrictive or too generous for your power supply.
-Hardware Configuration:
-Changed HORIZON pin from D6 → D2
-Added STARS strand on D6 (20 simple on/off white LEDs)
-Power Management:
-Increased MAX_TOT
-MPR121 Touch Sensor:
-Added explicit I2C bus initialization (Wire.begin())
-Added comprehensive MPR121 register configuration (soft reset, baseline filtering, auto-config)
-Improved touch sensitivity with proper thresholds
-Added debug output (currently commented out)
-Code Improvements:
-Refactored brightness scaling into applyBrightnessToStrand() helper function
-Changed setStrandColor() to show all strands in sync (prevents flickering)
-Added more debug serial output in touch handlers
+================================================================================
+CLOUDYMOUNTAIN - LED ART INSTALLATION CONTROL SYSTEM
+================================================================================
+
+HARDWARE SPECIFICATIONS:
+------------------------
+- Microcontroller: ESP8266/ESP32
+- LED Type: SK6812RGBW (wired as GRBW order)
+- Power Supply: 5V 12A (10.2A safe usage @ 85%)
+- Touch Interface: MPR121 capacitive touch sensor (12 pads)
+
+LED STRANDS:
+  - Cloud 1: 32 pixels (Pin D3)
+  - Cloud 2: 45 pixels (Pin D4)
+  - Cloud 3: 46 pixels (Pin D5)
+  - Horizon: 54 pixels (Pin D2)
+  - Stars: 20 pixels simple on/off (Pin D6)
+
+POWER MANAGEMENT:
+  - Maximum total brightness: 129,000 units (72% of theoretical max)
+  - Automatic brightness limiting to prevent power supply overload
+  - Per-channel RGBW brightness tracking across all 177 pixels
+
+
+================================================================================
+TOUCH PAD CONTROLS (MPR121 CAPACITIVE SENSOR)
+================================================================================
+
+PAD 0 - START FULL SUNRISE SEQUENCE
+  • Hold Phase: 2 minutes at night blue (palette color 0)
+  • Progression: 20 minutes sunrise (palette 0→38)
+  • Ends at: DAY mode (full brightness)
+  • Total Duration: 22 minutes
+
+PAD 1 - FAST TEST SUNRISE SEQUENCE
+  • Hold Phase: 10 seconds at night blue
+  • Progression: 3 minutes 50 seconds sunrise
+  • Ends at: DAY mode
+  • Total Duration: 4 minutes
+  • Purpose: Quick testing without waiting 22 minutes
+
+PAD 2 - START SUNSET SEQUENCE
+  • Progression: 20 minutes sunset (palette 38→0, reverse)
+  • Brightness: Dims from 100% to 12.5%
+  • Ends at: Night blue (static, no auto-transition)
+
+PAD 3 - JUMP TO DAY MODE (INSTANT)
+  • Immediately sets all LEDs to daytime state
+  • Horizon: Palette color 38 at full brightness
+  • Clouds: Cloud palette color 38 (daytime white)
+  • If storm is active: Ends storm and returns to DAY
+  • Purpose: Quick way to get to daylight without waiting
+
+PAD 4 - RESET/OFF (EMERGENCY STOP)
+  • Stops all running sequences
+  • Deactivates all cloud patches
+  • Resets cloud pixels to deep blue (cloud palette 0)
+  • Turns off all LED strands (black)
+  • Clears storm state
+  • Purpose: Hard reset to clean state
+
+PAD 5 - TEST STORM (FAST TIMING)
+  • DIM phase: 5 seconds (100% → 15% brightness)
+  • ACTIVE phase: 30 seconds (lightning strikes)
+  • CLEAR phase: 5 seconds (15% → 100% brightness)
+  • Total Duration: 40 seconds
+  • Purpose: Quick storm testing without waiting for production timing
+
+PAD 6 - CUSTOM COLOR TEST (CLOUD 2)
+  • Allows serial input of custom RGBW values
+  • Format: R,G,B,W (example: "255,128,64,200")
+  • Range: 0-255 per channel
+  • Displays color on CLOUD_2 strand
+  • Purpose: Testing custom colors during development
+
+PAD 7 - CLOUD PALETTE CYCLE TEST (CLOUD 1)
+  • Cycles through all 39 cloud palette colors (0-38)
+  • Displays on CLOUD_1 strand
+  • Press repeatedly to advance through colors
+  • Shows black after color 38, then restarts at 0
+  • Serial output shows: index and RGBW values
+  • Purpose: Visual verification of cloud palette
+
+PAD 8 - TOGGLE STORM AUTO-TRIGGER
+  • Enables/disables random storm triggering
+  • When enabled: 30% chance per check (every 1 hour in DAY mode)
+  • Serial output: "ENABLED" or "DISABLED"
+  • Default: DISABLED (storms only via Pad 5)
+  • Purpose: Production mode for automatic weather effects
+
+
+================================================================================
+SEQUENCE STATES & TIMING
+================================================================================
+
+SEQ_OFF
+  • All LEDs off, no animations running
+  • Entered via: Pad 4 (reset)
+
+SEQ_SUNRISE_HOLD (Production)
+  • Duration: 2 minutes (120,000ms)
+  • Behavior: Hold at night blue (palette 0)
+  • Brightness: 12.5% (BRIGHTNESS_MIN_FACTOR)
+  • Auto-transitions to: SEQ_SUNRISE_PROG
+
+SEQ_TEST_SUNRISE_HOLD (Fast Test)
+  • Duration: 10 seconds (10,000ms)
+  • Behavior: Hold at night blue
+  • Purpose: Quick testing
+  • Auto-transitions to: SEQ_TEST_SUNRISE_PROG
+
+SEQ_SUNRISE_PROG (Production)
+  • Duration: 20 minutes (1,200,000ms)
+  • Palette progression: 0.0 → 38.0 (39 colors)
+  • Brightness: Ramps 12.5% → 100%
+  • Horizon-specific curve:
+    - Colors 0-33: Slow ramp 12.5% → 40%
+    - Colors 33-36: Fast ramp 40% → 80%
+    - Colors 36-38: Final ramp 80% → 100%
+  • Colors 32-38: "Spreading brightness" from center pixel outward
+  • Cloud patches: Triggered on each color change (3 patches per color)
+  • Auto-transitions to: SEQ_DAY
+
+SEQ_TEST_SUNRISE_PROG (Fast Test)
+  • Duration: 3 minutes 50 seconds (230,000ms)
+  • Same behavior as production, just faster
+  • Auto-transitions to: SEQ_DAY
+
+SEQ_DAY
+  • Static daytime state (no animation)
+  • Horizon: Palette color 38 at 100% brightness
+  • Clouds: Cloud palette color 38 (all pixels)
+  • Cloud patches: All deactivated
+  • Storm checking: Active if auto-trigger enabled (Pad 8)
+  • Entered via: Pad 3 (instant) or end of sunrise sequence
+
+SEQ_SUNSET_PROG
+  • Duration: 20 minutes (1,200,000ms)
+  • Palette progression: 38.0 → 0.0 (reverse)
+  • Brightness: Ramps 100% → 12.5%
+  • Cloud patches: Triggered on each color change (reverse)
+  • Ends at: Night blue (does NOT auto-loop back to sunrise)
+
+SEQ_STORM_DIM
+  • Production: 1 minute (60,000ms)
+  • Test: 5 seconds (5,000ms)
+  • Behavior: Smooth dim from 100% → 15%
+  • Affects: All 3 clouds AND horizon
+  • Auto-transitions to: SEQ_STORM_ACTIVE
+
+SEQ_STORM_ACTIVE
+  • Production: 5-10 minutes (random: 300,000-600,000ms)
+  • Test: 30 seconds (30,000ms)
+  • Behavior: Random lightning strikes
+  • Brightness: Held at 15% (except during flashes)
+  • Lightning intervals: 800-8000ms between strikes
+  • Auto-transitions to: SEQ_STORM_CLEAR
+
+SEQ_STORM_CLEAR
+  • Production: 1 minute (60,000ms)
+  • Test: 5 seconds (5,000ms)
+  • Behavior: Smooth brighten from 15% → 100%
+  • Affects: All 3 clouds AND horizon
+  • Auto-transitions to: SEQ_DAY
+
+
+================================================================================
+STORM SYSTEM DETAILS
+================================================================================
+
+STORM PHASES:
+  1. DIM: Clouds and horizon dim to 15% over 1 minute
+  2. ACTIVE: Lightning strikes for 5-10 minutes (random)
+  3. CLEAR: Clouds and horizon return to 100% over 1 minute
+
+STORM BRIGHTNESS:
+  • Dimmed level: 15% of normal brightness (was 25%, changed per user request)
+  • Affects: All 3 cloud strands AND horizon strand simultaneously
+  • Lightning flashes: Temporarily override dimming on selected pixels
+
+LIGHTNING STRIKE TYPES:
+  • 60% Single-Cloud: Hits 1-3 random pixels on one cloud
+  • 40% Multi-Cloud Arc: Spans 2-3 clouds (1 pixel each)
+
+LIGHTNING INTENSITY DISTRIBUTION:
+  • 40% Bright (palette indices 3-4): Close/intense strikes
+  • 40% Medium (palette indices 5-6): Mid-distance strikes
+  • 20% Dim (palette index 7): Distant/faint strikes
+
+MULTI-FLASH BEHAVIOR:
+  • 40% of strikes have 2-3 rapid flashes
+  • Flash interval: 50-200ms between flashes in sequence
+  • Each flash uses same pixels and intensity
+
+LIGHTNING TIMING:
+  • Flash duration: 150ms per flash
+  • Interval between strikes: 800-8000ms (random)
+  • No overlapping flashes (previous clears before next)
+
+STORM PALETTE (8 colors, RGBW order):
+  0: {25, 25, 35, 10}       - Dark stormy blue-gray
+  1: {30, 30, 40, 15}       - Lighter storm cloud
+  2: {35, 35, 45, 20}       - Medium storm cloud
+  3: {255, 255, 255, 255}   - Bright white (max intensity)
+  4: {240, 240, 255, 240}   - Bright lightning (close) - INCREASED
+  5: {200, 200, 230, 200}   - Medium lightning - INCREASED
+  6: {160, 160, 200, 160}   - Dim lightning (distant) - INCREASED
+  7: {120, 120, 160, 120}   - Very dim lightning - INCREASED
+
+AUTO-TRIGGER SYSTEM:
+  • Check interval: Every 1 hour (3,600,000ms) when in DAY mode
+  • Trigger probability: 30% chance per check
+  • Enable/disable: Pad 8 toggle
+  • Default state: DISABLED (must enable with Pad 8)
+
+
+================================================================================
+CLOUD PATCH SYSTEM
+================================================================================
+
+PURPOSE:
+  • Creates dynamic color patches that fade in on clouds during sunrise/sunset
+  • Synchronized with horizon color progression
+  • Adds visual depth and movement to cloud illumination
+
+PATCH SPECIFICATIONS:
+  • Maximum patches per cloud: 15 simultaneous
+  • Patch size: 4-9 pixels (random)
+  • Fade duration: 4-7 seconds (random: 4000-7000ms)
+  • Final color (index 38): Full-cloud coverage, 8-second fade
+
+TRIGGERING:
+  • Triggered on horizon color changes (when palette index changes)
+  • Creates 3 patches per color change (1 on each cloud)
+  • Only during progression sequences (not in DAY or hold modes)
+
+ZONE PLACEMENT (divides each cloud into thirds):
+  Cloud 1 (32px): Lower[0-10], Middle[11-21], Upper[22-31]
+  Cloud 2 (45px): Lower[0-14], Middle[15-29], Upper[30-44]
+  Cloud 3 (46px): Lower[0-15], Middle[16-30], Upper[31-45]
+
+ZONE SELECTION STRATEGY:
+  • Colors 1-9 (early dawn): 90% lower, 10% middle
+  • Colors 10-19 (sunrise): 70% middle, 25% lower, 5% upper
+  • Colors 20-29 (late sunrise): 70% upper, 20% middle, 10% lower
+  • Colors 30-39 (daylight): Evenly distributed (33% each zone)
+
+COLOR SELECTION:
+  • Uses current horizon color index as base
+  • 2 patches use base color, 1 patch uses nearby color (±1)
+  • Creates subtle color variation within same progression stage
+
+BLENDING ALGORITHM:
+  • Smooth fade from previous color to target color
+  • Includes subtle brightness dip during transition (20% dip at midpoint)
+  • Uses sin() curve for natural-looking crossfade
+  • Formula: dipFactor = 1.0 - (0.2 * sin(progress * PI))
+
+PATCH STATE TRACKING:
+  • Each cloud maintains array of current pixel colors
+  • Patches blend with existing colors (not replace)
+  • Completed patches (progress ≥ 1.0) are deactivated
+  • Inactive slots are reused for new patches
+
+
+================================================================================
+COLOR PALETTES
+================================================================================
+
+SUNSET/SUNRISE PALETTE (39 colors, stored in PROGMEM):
+  • Indices 0-38 (39 total colors)
+  • Used for: Horizon strand during sunrise/sunset
+  • Progression: Deep blue → purple → orange → yellow → bright daylight
+  • Interpolation: Smooth blending between adjacent colors
+  • Storage: PROGMEM to save SRAM
+
+CLOUD PALETTE (39 colors, stored in PROGMEM):
+  • Indices 0-38 (39 total colors)
+  • Used for: Cloud patch colors during sunrise/sunset
+  • Coordinated with horizon palette for visual harmony
+  • Color 0: Deep purple/blue (night)
+  • Color 38: Bright white (180,180,180,180) for daylight
+  • Storage: PROGMEM to save SRAM
+
+STORM PALETTE (8 colors, stored in PROGMEM):
+  • See "Storm System Details" section above
+  • Used exclusively during storm sequences
+
+
+================================================================================
+BRIGHTNESS CONTROL
+================================================================================
+
+GLOBAL BRIGHTNESS SCALE:
+  • Calculated based on power consumption
+  • Monitors total brightness across all 177 pixels
+  • Auto-scales if total exceeds MAX_TOTAL_BRIGHTNESS (129,000)
+  • Applied uniformly to all strands
+
+STATE-BASED BRIGHTNESS:
+  • SUNRISE_HOLD / TEST_SUNRISE_HOLD: 12.5% (min)
+  • SUNRISE_PROG / TEST_SUNRISE_PROG: Ramps 12.5% → 100%
+  • SUNSET_PROG: Ramps 100% → 12.5%
+  • DAY: 100% (max)
+  • STORM_DIM: Ramps 100% → 15%
+  • STORM_ACTIVE: Holds at 15%
+  • STORM_CLEAR: Ramps 15% → 100%
+
+HORIZON-SPECIFIC BRIGHTNESS CURVE (Sunrise only):
+  • Stage 1 (colors 0-33): Slow ramp 12.5% → 40%
+  • Stage 2 (colors 33-36): Fast ramp 40% → 80%
+  • Stage 3 (colors 36-38): Final ramp 80% → 100%
+  • Colors 32-38: "Spreading" effect from center pixel outward
+
+SPREADING BRIGHTNESS ALGORITHM (Colors 32-38):
+  • Center pixel (27 of 54) reaches 100% first
+  • Each color change adds one "ring" of bright pixels
+  • Outer pixels remain at base horizon brightness
+  • Creates sunrise effect spreading from horizon center
+
+
+================================================================================
+SERIAL INTERFACE
+================================================================================
+
+BAUD RATE: 115200
+
+DEBUG OUTPUT:
+  • Pad touch/release events
+  • Sequence transitions
+  • Storm state changes
+  • Lightning strike details
+  • Progression percentage updates (every 1 second)
+  • Palette position and color indices
+  • Brightness scaling warnings
+
+CUSTOM COLOR INPUT (Pad 6):
+  • Format: "R,G,B,W" (comma-separated, no spaces)
+  • Example: "255,128,64,200"
+  • Range: 0-255 per channel
+  • Invalid input triggers error message
+
+PALETTE CYCLE OUTPUT (Pad 7):
+  • Shows current color index (0-38)
+  • Displays RGBW values for each color
+  • Indicates cycle completion
+
+
+================================================================================
+MEMORY USAGE & OPTIMIZATION
+================================================================================
+
+SRAM USAGE:
+  • StormState struct: ~50 bytes
+  • CloudState structs (3): ~5KB total (tracks all pixel colors + patches)
+  • Touch sensor state: Minimal
+  • All palettes stored in PROGMEM (not SRAM)
+
+PROGMEM STORAGE:
+  • sunsetPalette: 156 bytes (39 colors × 4 bytes)
+  • cloudPalette: 156 bytes (39 colors × 4 bytes)
+  • stormPalette: 32 bytes (8 colors × 4 bytes)
+  • Total: 344 bytes in flash instead of SRAM
+
+PERFORMANCE:
+  • Main loop delay: 10ms
+  • Cloud patch updates: Every loop iteration (when active)
+  • Storm updates: Every loop iteration (when in storm sequence)
+  • Touch polling: Every loop iteration
+  • Progression updates: Every loop iteration (when animating)
+
+
+================================================================================
+KNOWN ISSUES & NOTES
+================================================================================
+
+CURRENT ISSUES (from code comments):
+  1. "then fix the end of the dawn sequence. maybe brightness issue?"
+     STATUS: Needs investigation - possible brightness issue at end of sunrise
+
+  2. "need to invert cloud top/bottom"
+     STATUS: Not yet implemented - cloud pixel ordering may need reversal
+
+RECENT CHANGES:
+  • Storm brightness reduced from 25% to 15% (user request)
+  • Lightning brightness increased significantly (indices 4-7)
+  • Storm clear duration: 60 seconds (production), 5 seconds (test)
+
+DESIGN DECISIONS:
+  • Storm system mutually exclusive with cloud patch system
+  • Cloud patches disabled during storm sequences
+  • Pad 3 (DAY mode) will end active storm gracefully
+  • Pad 4 (RESET) performs hard reset of all states
+  • Stars remain simple on/off (not addressable)
+
+
+================================================================================
+DEVELOPMENT & TESTING TIPS
+================================================================================
+
+QUICK TESTING WORKFLOW:
+  1. Use Pad 1 for fast 4-minute sunrise test (vs 22 minutes)
+  2. Use Pad 5 for fast 40-second storm test (vs 12 minutes)
+  3. Use Pad 3 to jump directly to DAY mode
+  4. Use Pad 4 to reset between tests
+
+STORM TESTING:
+  • Enable auto-trigger (Pad 8) ONLY for production testing
+  • For rapid testing, change STORM_MIN_CHECK_INTERVAL_MS to 10,000 (10 sec)
+  • Remember to restore original 1-hour interval before deployment
+  • Watch serial monitor for detailed lightning strike info
+
+PALETTE TESTING:
+  • Pad 7 cycles cloud colors on CLOUD_1
+  • Pad 6 allows custom RGBW input for CLOUD_2
+  • Use serial monitor to see exact RGBW values
+
+BRIGHTNESS TESTING:
+  • Monitor serial output for "Brightness limit applied" warnings
+  • If seeing limits, check total pixel brightness across all strands
+  • MAX_TOTAL_BRIGHTNESS = 129,000 (adjustable in code)
+
+POWER SUPPLY NOTES:
+  • 5V 12A supply, limited to 85% (10.2A safe)
+  • 177 total pixels @ 80mA max = 14.16A theoretical
+  • Current limit prevents reaching theoretical max
+  • Brightness auto-scaling protects power supply
+
+
+================================================================================
+FILE STRUCTURE
+================================================================================
+
+cloudyMountain.ino - Main sketch file (single-file implementation)
+  • All code in one file for Arduino IDE compatibility
+  • No separate header files
+  • All includes at top, function implementations follow
+
+DEPENDENCIES (Arduino Libraries):
+  • Wire.h - I2C communication for MPR121
+  • Adafruit_MPR121.h - Touch sensor library
+  • Adafruit_NeoPixel.h - LED control library
+
+
+================================================================================
+CODE CHANGE INSTRUCTIONS
+================================================================================
+
+TO CHANGE STORM BRIGHTNESS:
+  • Location: getStormBrightness() function (around line 1106)
+  • Change the values in return statements:
+    - DIM phase: return 1.0 - (progress * 0.85) → change 0.85 to adjust
+    - ACTIVE phase: return 0.15 → change to desired brightness (0.0-1.0)
+    - CLEAR phase: return 0.15 + (progress * 0.85) → match DIM value
+
+TO CHANGE STORM TIMINGS:
+  • Location: Top of file, timing constants (lines 41-58)
+  • Production storm:
+    - STORM_DIM_DURATION_MS (default: 60000 = 1 minute)
+    - STORM_CLEAR_DURATION_MS (default: 60000 = 1 minute)
+    - STORM_MIN_DURATION_MS (default: 300000 = 5 minutes)
+    - STORM_MAX_DURATION_MS (default: 600000 = 10 minutes)
+  • Test storm:
+    - TEST_STORM_DIM_DURATION_MS (default: 5000 = 5 seconds)
+    - TEST_STORM_ACTIVE_DURATION_MS (default: 30000 = 30 seconds)
+    - TEST_STORM_CLEAR_DURATION_MS (default: 5000 = 5 seconds)
+
+TO CHANGE LIGHTNING BRIGHTNESS:
+  • Location: stormPalette array (lines 216-225)
+  • Indices 3-7 control lightning brightness
+  • Higher RGBW values = brighter flashes
+  • Keep index 3 at {255,255,255,255} for maximum brightness
+
+TO CHANGE LIGHTNING TIMING:
+  • Location: Lightning timing constants (lines 49-53)
+  • LIGHTNING_MIN_INTERVAL_MS (default: 800ms)
+  • LIGHTNING_MAX_INTERVAL_MS (default: 8000ms)
+  • LIGHTNING_FLASH_DURATION_MS (default: 150ms)
+  • LIGHTNING_MULTI_FLASH_CHANCE (default: 40%)
+
+TO CHANGE SUNRISE/SUNSET DURATION:
+  • Location: Timing constants (lines 32-39)
+  • SUNRISE_HOLD_DURATION_MS (default: 120000 = 2 minutes)
+  • PROGRESSION_DURATION_MS (default: 1200000 = 20 minutes)
+  • Total sunrise time: HOLD + PROGRESSION = 22 minutes
+
+TO CHANGE POWER LIMIT:
+  • Location: Line 23
+  • MAX_TOTAL_BRIGHTNESS (default: 129000)
+  • Increase if you have more power available
+  • Decrease if power supply struggling
+
+TO MODIFY TOUCH PAD ASSIGNMENTS:
+  • Location: handleTouch() function (around line 1555)
+  • Each pad is a case statement (case 0: through case 8:)
+  • Swap code between cases to reassign functions
+
+TO ADD NEW COLOR PALETTE:
+  • Create new PROGMEM array like sunsetPalette or cloudPalette
+  • Use ColorGRBW struct: {R, G, B, W}
+  • Create helper function like getPaletteColor()
+  • Call new palette in appropriate sequence
+
+TO CHANGE CLOUD ZONES:
+  • Location: setup() function (around lines 1141-1165)
+  • Adjust cloudXZones.lowerStart/End values
+  • Adjust cloudXZones.middleStart/End values
+  • Adjust cloudXZones.upperStart/End values
+  • Must cover all pixels (0 to numPixels-1)
+
+TO INVERT CLOUD PIXEL ORDER:
+  • Needed if clouds are mounted upside-down
+  • In updateCloudPatches(): change pixel = N-i-1 (where N = numPixels)
+  • In setStrandColor(): reverse loop direction
+  • In triggerLightning(): invert pixel selection
+
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+TOUCH PADS NOT RESPONDING:
+  • Check MPR121 I2C connection (SDA/SCL on ESP8266)
+  • Check serial monitor for "MPR121 not found" error
+  • Verify 3.3V power to MPR121
+  • Check touch sensor thresholds in setup() (line 1055)
+  • Uncomment debug code in loop() to see touch values
+
+LEDS NOT TURNING ON:
+  • Check 5V power supply connection
+  • Verify NeoPixel data pins (D2-D6)
+  • Check LED strip wiring (GND, 5V, Data)
+  • Test with simple color: setStrandColor(cloud1, 255, 0, 0, 0)
+
+BRIGHTNESS TOO DIM:
+  • Check MAX_TOTAL_BRIGHTNESS setting (line 23)
+  • Monitor serial for "Brightness limit applied" messages
+  • Increase power limit or reduce number of lit pixels
+  • Check state-based brightness factors
+
+STORM NOT TRIGGERING:
+  • Verify auto-trigger enabled (Pad 8)
+  • Check if in DAY mode (required for auto-trigger)
+  • Wait 1 hour between checks (or reduce interval for testing)
+  • Only 30% chance per check (may need multiple checks)
+
+SUNRISE/SUNSET NOT SMOOTH:
+  • Check palette interpolation in interpolateColor()
+  • Verify palette values are gradual (not large jumps)
+  • Check progression timing calculations
+  • Monitor serial output for palette position
+
+CLOUD PATCHES NOT APPEARING:
+  • Patches only trigger during progression sequences
+  • Check if MAX_PATCHES_PER_CLOUD exceeded (15 limit)
+  • Verify triggerCloudPatchesForHorizonColor() is called
+  • Check updateCloudPatches() is running in loop()
+
+MEMORY ISSUES:
+  • Monitor free RAM in serial output
+  • Reduce MAX_PATCHES_PER_CLOUD if needed
+  • Check for memory leaks in custom code
+  • Ensure palettes are in PROGMEM, not SRAM
+
+
+================================================================================
+FUTURE ENHANCEMENT IDEAS
+================================================================================
+
+POTENTIAL IMPROVEMENTS:
+  • Add moon simulation with slow brightness cycle
+  • Implement rain effect (rapid dimming/brightening)
+  • Add wind effect (traveling waves across clouds)
+  • Create lightning "rumble" (multiple distant flashes)
+  • Add seasonal color palettes (autumn, winter, etc.)
+  • Implement smooth crossfade between sequences
+  • Add EEPROM storage for user preferences
+  • Create web interface for remote control (ESP8266 WiFi)
+  • Add ambient light sensor for auto-brightness
+  • Implement sound reactive mode
+
+STORM ENHANCEMENTS:
+  • Vary storm intensity (light drizzle vs thunderstorm)
+  • Add "distant storm" mode (dim flashes only)
+  • Create progressive storm build-up
+  • Add post-storm "rainbow" color shift
+  • Implement seasonal storm patterns
+
+
+================================================================================
+VERSION HISTORY
+================================================================================
+
+CURRENT VERSION: Development Build
+  • Storm system fully implemented (15% dimming, brighter lightning)
+  • Cloud patch system operational
+  • All 9 touch pads functional
+  • Production and test timings available
+  • Auto-trigger storm system (Pad 8)
+
+MAJOR MILESTONES:
+  • Initial implementation: Basic sunrise/sunset
+  • Phase 2: Cloud patch blending system
+  • Phase 3: Patch triggering logic
+  • Storm Phase 1-3: Foundation, brightness, state machine
+  • Storm Phase 4-9: Palette, scheduling, execution, auto-trigger
+  • User adjustments: 15% storm brightness, brighter lightning
+
+================================================================================
