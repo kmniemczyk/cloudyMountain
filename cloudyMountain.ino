@@ -1,3 +1,4 @@
+// make star changes
 //test the storm more and it made pad 8 the turn it on pad and that needs to change
 //then fix the end of the dawn sequence. maybe brightness issue?
 //need to invert cloud top /bottom
