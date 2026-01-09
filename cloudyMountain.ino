@@ -5,6 +5,10 @@
 #include <Wire.h>
 #include <Adafruit_MPR121.h>
 #include <Adafruit_NeoPixel.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
 
 // Pin definitions for NeoPixel strands
 #define CLOUD_1_PIN D3
@@ -298,6 +302,98 @@ struct StormState {
 
 // Global storm state
 StormState stormState = {false, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 3, {0,0,0}, 0, 1.0};
+
+// ========== BLE CONFIGURATION AND STATE ==========
+
+// BLE Service and Characteristic UUIDs
+#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define MODE_CONTROL_UUID   "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define CYCLE_CONFIG_UUID   "beb5483e-36e1-4688-b7f5-ea07361b26a9"
+#define SCHEDULE_CONFIG_UUID "beb5483e-36e1-4688-b7f5-ea07361b26aa"
+#define STORM_CONFIG_UUID   "beb5483e-36e1-4688-b7f5-ea07361b26ab"
+#define TIME_SYNC_UUID      "beb5483e-36e1-4688-b7f5-ea07361b26ae"
+#define CURRENT_STATE_UUID  "beb5483e-36e1-4688-b7f5-ea07361b26ac"
+#define CONFIG_ECHO_UUID    "beb5483e-36e1-4688-b7f5-ea07361b26ad"
+
+// BLE server and characteristics pointers
+BLEServer* pServer = NULL;
+BLECharacteristic* pModeControlChar = NULL;
+BLECharacteristic* pCycleConfigChar = NULL;
+BLECharacteristic* pScheduleConfigChar = NULL;
+BLECharacteristic* pStormConfigChar = NULL;
+BLECharacteristic* pTimeSyncChar = NULL;
+BLECharacteristic* pCurrentStateChar = NULL;
+BLECharacteristic* pConfigEchoChar = NULL;
+
+// BLE connection state
+bool deviceConnected = false;
+bool oldDeviceConnected = false;
+
+// BLE Control State - manages all app-controlled features
+struct BLEControlState {
+  // Pause/Resume state
+  bool isPaused;
+  unsigned long pausedTimeRemaining;  // ms remaining when paused
+  unsigned long pauseStartTime;       // When pause was initiated
+
+  // Configurable cycle duration
+  uint16_t cycleDurationMinutes;      // Total cycle duration (default 22)
+  uint16_t holdDurationMinutes;       // Hold before sunrise (default 2)
+  uint32_t calculatedProgressDuration; // Calculated progression time in ms
+  uint32_t calculatedHoldDuration;     // Calculated hold time in ms
+
+  // Scheduling
+  bool scheduleEnabled;
+  uint8_t scheduleHour;               // 0-23
+  uint8_t scheduleMinute;             // 0-59
+  uint8_t scheduleDayMask;            // Bit mask for days (bit 0=Sunday, bit 6=Saturday)
+  bool waitingForScheduledStart;      // True when waiting for next scheduled time
+
+  // Night mode control
+  bool enableNightAfterSunset;
+  bool currentlyInAutoNight;          // True when in auto-night mode
+
+  // Storm control
+  bool stormEnabledDay;
+  bool stormEnabledNight;
+
+  // Current mode from app
+  uint8_t currentAppMode;             // 0=off, 1=cycle, 2=night, 3=day
+};
+
+// Global BLE control state with defaults
+BLEControlState bleControl = {
+  false,    // isPaused
+  0,        // pausedTimeRemaining
+  0,        // pauseStartTime
+  22,       // cycleDurationMinutes (default: 2min hold + 20min prog)
+  2,        // holdDurationMinutes
+  1200000,  // calculatedProgressDuration (20 min default in ms)
+  120000,   // calculatedHoldDuration (2 min default in ms)
+  false,    // scheduleEnabled
+  6,        // scheduleHour (default 6 AM)
+  0,        // scheduleMinute
+  0xFF,     // scheduleDayMask (every day)
+  false,    // waitingForScheduledStart
+  false,    // enableNightAfterSunset
+  false,    // currentlyInAutoNight
+  false,    // stormEnabledDay
+  false,    // stormEnabledNight
+  0         // currentAppMode
+};
+
+// Time synchronization state (app sends time on connect)
+struct TimeSync {
+  bool synchronized;
+  unsigned long syncMillis;      // millis() when synchronized
+  uint32_t syncEpoch;            // Unix timestamp at sync (seconds since 1970)
+  uint8_t syncDayOfWeek;         // 0=Sunday, 1=Monday, ..., 6=Saturday
+};
+
+// Global time sync state
+TimeSync timeSync = {false, 0, 0, 0};
+
+// ========== END BLE CONFIGURATION ==========
 
 // Cloud patch system - tracks individual color patches fading in on clouds
 #define MAX_PATCHES_PER_CLOUD 15  // Max simultaneous patches per cloud strand
@@ -1539,6 +1635,110 @@ void scheduleNextLightning() {
   Serial.println("ms");
 }
 
+// ========== BLE CALLBACK CLASSES ==========
+
+// Server callbacks - handle connection/disconnection
+class MyServerCallbacks: public BLEServerCallbacks {
+  void onConnect(BLEServer* pServer) {
+    deviceConnected = true;
+    Serial.println("BLE: Device connected");
+  }
+
+  void onDisconnect(BLEServer* pServer) {
+    deviceConnected = false;
+    Serial.println("BLE: Device disconnected");
+  }
+};
+
+// ========== BLE INITIALIZATION ==========
+
+void initializeBLE() {
+  Serial.println("========================================");
+  Serial.println("Initializing BLE...");
+
+  // Create BLE device with name "CloudyMountain"
+  BLEDevice::init("CloudyMountain");
+
+  // Create BLE server
+  pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+
+  // Create BLE service
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+
+  // Create Mode Control characteristic (Write only)
+  pModeControlChar = pService->createCharacteristic(
+    MODE_CONTROL_UUID,
+    BLECharacteristic::PROPERTY_WRITE
+  );
+
+  // Create Cycle Config characteristic (Write only)
+  pCycleConfigChar = pService->createCharacteristic(
+    CYCLE_CONFIG_UUID,
+    BLECharacteristic::PROPERTY_WRITE
+  );
+
+  // Create Schedule Config characteristic (Write only)
+  pScheduleConfigChar = pService->createCharacteristic(
+    SCHEDULE_CONFIG_UUID,
+    BLECharacteristic::PROPERTY_WRITE
+  );
+
+  // Create Storm Config characteristic (Write only)
+  pStormConfigChar = pService->createCharacteristic(
+    STORM_CONFIG_UUID,
+    BLECharacteristic::PROPERTY_WRITE
+  );
+
+  // Create Time Sync characteristic (Write only)
+  pTimeSyncChar = pService->createCharacteristic(
+    TIME_SYNC_UUID,
+    BLECharacteristic::PROPERTY_WRITE
+  );
+
+  // Create Current State characteristic (Read + Notify)
+  pCurrentStateChar = pService->createCharacteristic(
+    CURRENT_STATE_UUID,
+    BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
+  );
+  pCurrentStateChar->addDescriptor(new BLE2902());
+
+  // Create Config Echo characteristic (Read + Notify)
+  pConfigEchoChar = pService->createCharacteristic(
+    CONFIG_ECHO_UUID,
+    BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
+  );
+  pConfigEchoChar->addDescriptor(new BLE2902());
+
+  // Start the service
+  pService->start();
+  Serial.println("BLE: Service started");
+
+  // Configure advertising for universal compatibility
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+
+  // Use standard BLE advertising intervals (slower but more compatible)
+  // Android devices work best with slower, more standard intervals
+  pAdvertising->setMinInterval(0x50);  // 50ms
+  pAdvertising->setMaxInterval(0xA0);  // 100ms
+
+  // Set connection parameters - standard values for broad compatibility
+  pAdvertising->setMinPreferred(0x06);  // 7.5ms min connection interval
+  pAdvertising->setMaxPreferred(0x12);  // 22.5ms max connection interval
+
+  // Start advertising
+  BLEDevice::startAdvertising();
+
+  Serial.println("BLE: Advertising started (universal compatibility mode)");
+  Serial.println("BLE: Device name: CloudyMountain");
+  Serial.println("BLE: Advertising interval: 50-100ms");
+  Serial.println("========================================");
+}
+
+// ========== SETUP FUNCTION ==========
+
 void setup() {
   // Initialize serial communication for debugging
   Serial.begin(115200);
@@ -1610,6 +1810,9 @@ void setup() {
   delay(200);  // Give it time to stabilize and auto-configure
 
   Serial.println("MPR121 configured!");
+
+  // Initialize BLE
+  initializeBLE();
 
   // Initialize all NeoPixel strands
   cloud1.begin();
@@ -1691,6 +1894,20 @@ void setup() {
 }
 
 void loop() {
+  // Handle BLE connection state changes
+  // Restart advertising when disconnected
+  if (!deviceConnected && oldDeviceConnected) {
+    delay(500); // Give the bluetooth stack time to get ready
+    BLEDevice::startAdvertising(); // Use BLEDevice instead of pServer
+    Serial.println("BLE: Disconnected - restarting advertising");
+    oldDeviceConnected = deviceConnected;
+  }
+  // Connection event
+  if (deviceConnected && !oldDeviceConnected) {
+    oldDeviceConnected = deviceConnected;
+    Serial.println("BLE: Connected");
+  }
+
   // Check for serial input (for pad 6 custom color testing)
   if (Serial.available() > 0) {
     String input = Serial.readStringUntil('\n');
