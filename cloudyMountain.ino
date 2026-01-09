@@ -96,6 +96,7 @@ typedef enum {
   SEQ_SUNRISE_HOLD,      // Hold at night blue before sunrise (2min)
   SEQ_SUNRISE_PROG,      // Sunrise progression (20min)
   SEQ_DAY,               // Daytime mode
+  SEQ_NIGHT,             // Night mode (static, low brightness)
   SEQ_SUNSET_PROG,       // Sunset progression (reverse)
   SEQ_TEST_SUNRISE_HOLD, // Fast test hold (10sec)
   SEQ_TEST_SUNRISE_PROG, // Fast test progression (3min 50sec)
@@ -923,6 +924,9 @@ void updateProgression() {
             cloud3State.patches[i].active = false;
           }
 
+          // Turn OFF stars for day mode
+          digitalWrite(STARS_PIN, LOW);
+
           Serial.print("DAY mode: Clouds set to cloudPalette[38] RGBW: (");
           Serial.print(cloudDayColor.r); Serial.print(", ");
           Serial.print(cloudDayColor.g); Serial.print(", ");
@@ -931,7 +935,7 @@ void updateProgression() {
         }
 
         progState.isAnimating = false;
-        Serial.println("DAY mode active (static) - displaying palette 39 at full brightness.");
+        Serial.println("DAY mode active (static) - displaying palette 39 at full brightness, stars OFF.");
         break;
 
       default:
@@ -1028,6 +1032,9 @@ void updateProgression() {
       cloud3State.patches[i].active = false;
     }
 
+    // Turn OFF stars for day mode
+    digitalWrite(STARS_PIN, LOW);
+
     Serial.print("Clouds set to cloudPalette[38] RGBW: (");
     Serial.print(cloudDayColor.r); Serial.print(", ");
     Serial.print(cloudDayColor.g); Serial.print(", ");
@@ -1036,7 +1043,7 @@ void updateProgression() {
 
     progState.dayModeDisplayed = true;
     progState.isAnimating = false;
-    Serial.println("DAY mode activated immediately - displaying palette 39 at full brightness.");
+    Serial.println("DAY mode activated immediately - displaying palette 39 at full brightness, stars OFF.");
     return;
   }
 
@@ -1638,7 +1645,13 @@ void scheduleNextLightning() {
 // ========== BLE COMMAND HANDLERS ==========
 
 // Handle mode control commands from BLE
-void handleModeControl(uint8_t mode) {
+void handleModeControl(uint8_t* data, size_t length) {
+  if (length < 1) {
+    Serial.println("BLE: Error - empty mode control command");
+    return;
+  }
+
+  uint8_t mode = data[0];
   Serial.print("BLE: Mode control received: 0x");
   Serial.println(mode, HEX);
 
@@ -1699,6 +1712,165 @@ void handleModeControl(uint8_t mode) {
       }
       break;
 
+    case 0x01: // CYCLE mode (with pause/resume)
+      {
+        if (length < 2) {
+          Serial.println("BLE: Error - CYCLE command requires pause state byte");
+          return;
+        }
+
+        uint8_t pauseState = data[1];  // 0x00=resume, 0x01=pause
+        Serial.print("BLE: CYCLE mode - pause state: 0x");
+        Serial.println(pauseState, HEX);
+
+        if (pauseState == 0x01) {
+          // PAUSE requested
+          if (!bleControl.isPaused && progState.isAnimating) {
+            // Currently running - pause it
+            bleControl.isPaused = true;
+            bleControl.pauseStartTime = millis();
+
+            // Calculate remaining time in current phase
+            unsigned long elapsed = millis() - progState.phaseStartTime;
+            unsigned long phaseDuration;
+
+            // Determine phase duration based on current state
+            switch(progState.currentSequence) {
+              case SEQ_SUNRISE_HOLD:
+                phaseDuration = bleControl.calculatedHoldDuration;
+                break;
+              case SEQ_SUNRISE_PROG:
+              case SEQ_SUNSET_PROG:
+                phaseDuration = bleControl.calculatedProgressDuration;
+                break;
+              default:
+                phaseDuration = bleControl.calculatedProgressDuration;
+                break;
+            }
+
+            // Store remaining time
+            if (elapsed < phaseDuration) {
+              bleControl.pausedTimeRemaining = phaseDuration - elapsed;
+            } else {
+              bleControl.pausedTimeRemaining = 0;
+            }
+
+            // Stop animation
+            progState.isAnimating = false;
+
+            Serial.println("BLE: Cycle PAUSED");
+            Serial.print("  Remaining time: ");
+            Serial.print(bleControl.pausedTimeRemaining / 1000);
+            Serial.println(" seconds");
+          } else {
+            Serial.println("BLE: Already paused or not animating");
+          }
+        }
+        else if (pauseState == 0x00) {
+          // RESUME requested
+          if (bleControl.isPaused) {
+            // Currently paused - resume it
+            bleControl.isPaused = false;
+
+            // Restore phase start time accounting for paused duration
+            progState.phaseStartTime = millis() - (progState.progressPercent / 100.0 *
+                                                   (progState.currentSequence == SEQ_SUNRISE_HOLD ?
+                                                    bleControl.calculatedHoldDuration :
+                                                    bleControl.calculatedProgressDuration));
+
+            // Resume animation
+            progState.isAnimating = true;
+
+            Serial.println("BLE: Cycle RESUMED");
+          } else {
+            // Not currently paused - start a new cycle
+            Serial.println("BLE: Starting new cycle (not paused)");
+            bleControl.currentAppMode = 0x01;
+            bleControl.isPaused = false;
+            transitionToSequence(SEQ_SUNRISE_HOLD);
+          }
+        }
+        else {
+          Serial.print("BLE: Unknown pause state: 0x");
+          Serial.println(pauseState, HEX);
+        }
+      }
+      break;
+
+    case 0x02: // NIGHT mode
+      {
+        Serial.println("BLE: Setting NIGHT mode");
+        bleControl.currentAppMode = 0x02;
+
+        // Stop any active sequences
+        progState.currentSequence = SEQ_NIGHT;
+        progState.isAnimating = false;
+
+        // Set horizon to night blue (palette color 0) at low brightness (12.5%)
+        ColorGRBW nightHorizonColor = getPaletteColor(0);  // Deep blue
+        float nightBrightness = BRIGHTNESS_MIN_FACTOR;     // 0.125 (12.5%)
+
+        for(int i = 0; i < HORIZON_PIXELS; i++) {
+          horizon.setPixelColor(i, horizon.Color(
+            nightHorizonColor.r * nightBrightness,
+            nightHorizonColor.g * nightBrightness,
+            nightHorizonColor.b * nightBrightness,
+            nightHorizonColor.w * nightBrightness
+          ));
+        }
+        horizon.show();
+
+        // Set clouds to night color (cloudPalette color 0) at low brightness
+        ColorGRBW nightCloudColor = getCloudPaletteColor(0);  // Night cloud color
+
+        // Update cloud state arrays
+        for(int i = 0; i < CLOUD_1_PIXELS; i++) {
+          cloud1State.currentPixelColors[i] = nightCloudColor;
+          cloud1.setPixelColor(i, cloud1.Color(
+            nightCloudColor.r * nightBrightness,
+            nightCloudColor.g * nightBrightness,
+            nightCloudColor.b * nightBrightness,
+            nightCloudColor.w * nightBrightness
+          ));
+        }
+        cloud1.show();
+
+        for(int i = 0; i < CLOUD_2_PIXELS; i++) {
+          cloud2State.currentPixelColors[i] = nightCloudColor;
+          cloud2.setPixelColor(i, cloud2.Color(
+            nightCloudColor.r * nightBrightness,
+            nightCloudColor.g * nightBrightness,
+            nightCloudColor.b * nightBrightness,
+            nightCloudColor.w * nightBrightness
+          ));
+        }
+        cloud2.show();
+
+        for(int i = 0; i < CLOUD_3_PIXELS; i++) {
+          cloud3State.currentPixelColors[i] = nightCloudColor;
+          cloud3.setPixelColor(i, cloud3.Color(
+            nightCloudColor.r * nightBrightness,
+            nightCloudColor.g * nightBrightness,
+            nightCloudColor.b * nightBrightness,
+            nightCloudColor.w * nightBrightness
+          ));
+        }
+        cloud3.show();
+
+        // Deactivate all cloud patches (static night mode)
+        for(int i = 0; i < MAX_PATCHES_PER_CLOUD; i++) {
+          cloud1State.patches[i].active = false;
+          cloud2State.patches[i].active = false;
+          cloud3State.patches[i].active = false;
+        }
+
+        // Turn ON stars for night mode
+        digitalWrite(STARS_PIN, HIGH);
+
+        Serial.println("BLE: Night mode active (low brightness, stars ON)");
+      }
+      break;
+
     case 0x03: // DAY mode
       Serial.println("BLE: Jumping to DAY mode");
       bleControl.currentAppMode = 0x03;
@@ -1711,6 +1883,56 @@ void handleModeControl(uint8_t mode) {
       Serial.println(mode, HEX);
       break;
   }
+}
+
+// Handle cycle configuration commands from BLE
+void handleCycleConfig(uint8_t* data, size_t length) {
+  if (length < 4) {
+    Serial.println("BLE: Error - Cycle config requires 4 bytes");
+    return;
+  }
+
+  // Parse little-endian uint16_t values
+  uint16_t cycleDurationMinutes = data[0] | (data[1] << 8);
+  uint16_t holdDurationMinutes = data[2] | (data[3] << 8);
+
+  Serial.println("========================================");
+  Serial.println("BLE: Cycle configuration received");
+  Serial.print("  Total cycle duration: ");
+  Serial.print(cycleDurationMinutes);
+  Serial.println(" minutes");
+  Serial.print("  Hold duration: ");
+  Serial.print(holdDurationMinutes);
+  Serial.println(" minutes");
+
+  // Validate values
+  if (holdDurationMinutes >= cycleDurationMinutes) {
+    Serial.println("BLE: Error - Hold duration must be less than cycle duration");
+    return;
+  }
+
+  if (cycleDurationMinutes < 1 || cycleDurationMinutes > 1440) {  // Max 24 hours
+    Serial.println("BLE: Error - Cycle duration must be 1-1440 minutes");
+    return;
+  }
+
+  // Store configuration
+  bleControl.cycleDurationMinutes = cycleDurationMinutes;
+  bleControl.holdDurationMinutes = holdDurationMinutes;
+
+  // Calculate progression duration (total - hold)
+  uint16_t progressionMinutes = cycleDurationMinutes - holdDurationMinutes;
+  bleControl.calculatedProgressDuration = (uint32_t)progressionMinutes * 60000UL;  // Convert to ms
+  bleControl.calculatedHoldDuration = (uint32_t)holdDurationMinutes * 60000UL;
+
+  Serial.print("  Calculated progression duration: ");
+  Serial.print(progressionMinutes);
+  Serial.println(" minutes");
+  Serial.print("  Calculated hold duration (ms): ");
+  Serial.println(bleControl.calculatedHoldDuration);
+  Serial.print("  Calculated progression duration (ms): ");
+  Serial.println(bleControl.calculatedProgressDuration);
+  Serial.println("========================================");
 }
 
 // ========== BLE CALLBACK CLASSES ==========
@@ -1734,8 +1956,20 @@ class ModeControlCallbacks: public BLECharacteristicCallbacks {
     std::string value = pCharacteristic->getValue();
 
     if (value.length() > 0) {
-      uint8_t mode = (uint8_t)value[0];
-      handleModeControl(mode);
+      // Pass full buffer to handler
+      handleModeControl((uint8_t*)value.data(), value.length());
+    }
+  }
+};
+
+// Cycle Config characteristic callbacks
+class CycleConfigCallbacks: public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) {
+    std::string value = pCharacteristic->getValue();
+
+    if (value.length() > 0) {
+      // Pass full buffer to handler
+      handleCycleConfig((uint8_t*)value.data(), value.length());
     }
   }
 };
