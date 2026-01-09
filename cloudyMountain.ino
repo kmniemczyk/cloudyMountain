@@ -1935,6 +1935,341 @@ void handleCycleConfig(uint8_t* data, size_t length) {
   Serial.println("========================================");
 }
 
+// Handle time synchronization commands from BLE
+void handleTimeSync(uint8_t* data, size_t length) {
+  if (length < 6) {
+    Serial.println("BLE: Error - Time sync requires 6 bytes");
+    return;
+  }
+
+  // Parse time sync data (little-endian):
+  // Bytes 0-3: Unix timestamp (uint32_t)
+  // Byte 4: Day of week (0=Sunday, 6=Saturday)
+  // Byte 5: Reserved/padding
+
+  uint32_t unixTimestamp = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24);
+  uint8_t dayOfWeek = data[4];
+
+  Serial.println("========================================");
+  Serial.println("BLE: Time synchronization received");
+  Serial.print("  Unix timestamp: ");
+  Serial.println(unixTimestamp);
+  Serial.print("  Day of week: ");
+  Serial.print(dayOfWeek);
+  Serial.print(" (");
+
+  // Print day name
+  const char* dayNames[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+  if (dayOfWeek <= 6) {
+    Serial.print(dayNames[dayOfWeek]);
+  } else {
+    Serial.print("INVALID");
+  }
+  Serial.println(")");
+
+  // Validate day of week
+  if (dayOfWeek > 6) {
+    Serial.println("BLE: Error - Invalid day of week (must be 0-6)");
+    return;
+  }
+
+  // Store time sync data
+  timeSync.synchronized = true;
+  timeSync.syncMillis = millis();
+  timeSync.syncEpoch = unixTimestamp;
+  timeSync.syncDayOfWeek = dayOfWeek;
+
+  Serial.println("  Time synchronized successfully!");
+  Serial.println("========================================");
+}
+
+// Handle schedule configuration commands from BLE
+void handleScheduleConfig(uint8_t* data, size_t length) {
+  if (length < 5) {
+    Serial.println("BLE: Error - Schedule config requires 5 bytes");
+    return;
+  }
+
+  // Parse schedule data:
+  // Byte 0: Enable flag (0x00=disabled, 0x01=enabled)
+  // Byte 1: Hour (0-23)
+  // Byte 2: Minute (0-59)
+  // Byte 3: Day mask (bit 0=Sunday, bit 6=Saturday)
+  // Byte 4: Night mode after sunset flag (0x00=disabled, 0x01=enabled)
+
+  uint8_t enabled = data[0];
+  uint8_t hour = data[1];
+  uint8_t minute = data[2];
+  uint8_t dayMask = data[3];
+  uint8_t nightAfterSunset = data[4];
+
+  Serial.println("========================================");
+  Serial.println("BLE: Schedule configuration received");
+  Serial.print("  Enabled: ");
+  Serial.println(enabled ? "YES" : "NO");
+  Serial.print("  Time: ");
+  if (hour < 10) Serial.print("0");
+  Serial.print(hour);
+  Serial.print(":");
+  if (minute < 10) Serial.print("0");
+  Serial.println(minute);
+
+  Serial.print("  Days: ");
+  const char* dayNames[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+  bool firstDay = true;
+  for (int i = 0; i < 7; i++) {
+    if (dayMask & (1 << i)) {
+      if (!firstDay) Serial.print(", ");
+      Serial.print(dayNames[i]);
+      firstDay = false;
+    }
+  }
+  if (firstDay) Serial.print("NONE");
+  Serial.println();
+
+  Serial.print("  Night after sunset: ");
+  Serial.println(nightAfterSunset ? "YES" : "NO");
+
+  // Validate values
+  if (hour > 23) {
+    Serial.println("BLE: Error - Hour must be 0-23");
+    return;
+  }
+  if (minute > 59) {
+    Serial.println("BLE: Error - Minute must be 0-59");
+    return;
+  }
+  if (dayMask == 0) {
+    Serial.println("BLE: Error - At least one day must be selected");
+    return;
+  }
+
+  // Store schedule configuration
+  bleControl.scheduleEnabled = (enabled != 0);
+  bleControl.scheduleHour = hour;
+  bleControl.scheduleMinute = minute;
+  bleControl.scheduleDayMask = dayMask;
+  bleControl.enableNightAfterSunset = (nightAfterSunset != 0);
+
+  // Reset waiting flag to recheck schedule
+  if (bleControl.scheduleEnabled) {
+    bleControl.waitingForScheduledStart = true;
+    Serial.println("  Schedule activated - waiting for next scheduled time");
+  } else {
+    bleControl.waitingForScheduledStart = false;
+    Serial.println("  Schedule disabled");
+  }
+
+  Serial.println("========================================");
+}
+
+// Handle storm configuration commands from BLE
+void handleStormConfig(uint8_t* data, size_t length) {
+  if (length < 2) {
+    Serial.println("BLE: Error - Storm config requires 2 bytes");
+    return;
+  }
+
+  // Parse storm data:
+  // Byte 0: Storm enabled during day (0x00=disabled, 0x01=enabled)
+  // Byte 1: Storm enabled during night (0x00=disabled, 0x01=enabled)
+
+  uint8_t stormDay = data[0];
+  uint8_t stormNight = data[1];
+
+  Serial.println("========================================");
+  Serial.println("BLE: Storm configuration received");
+  Serial.print("  Storm during day: ");
+  Serial.println(stormDay ? "ENABLED" : "DISABLED");
+  Serial.print("  Storm during night: ");
+  Serial.println(stormNight ? "ENABLED" : "DISABLED");
+
+  // Store storm configuration
+  bleControl.stormEnabledDay = (stormDay != 0);
+  bleControl.stormEnabledNight = (stormNight != 0);
+
+  // Update global storm state based on current mode
+  if (progState.currentSequence == SEQ_DAY) {
+    stormState.stormEnabled = bleControl.stormEnabledDay;
+  } else if (progState.currentSequence == SEQ_NIGHT) {
+    stormState.stormEnabled = bleControl.stormEnabledNight;
+  }
+
+  Serial.print("  Current storm auto-trigger: ");
+  Serial.println(stormState.stormEnabled ? "ENABLED" : "DISABLED");
+  Serial.println("========================================");
+}
+
+// Get current time from synchronized clock
+// Returns seconds since midnight (0-86399)
+// Returns -1 if time is not synchronized
+int32_t getCurrentTimeOfDay() {
+  if (!timeSync.synchronized) {
+    return -1;
+  }
+
+  // Calculate elapsed seconds since sync
+  unsigned long elapsedMillis = millis() - timeSync.syncMillis;
+  uint32_t elapsedSeconds = elapsedMillis / 1000;
+
+  // Calculate current epoch time
+  uint32_t currentEpoch = timeSync.syncEpoch + elapsedSeconds;
+
+  // Calculate seconds since midnight (UTC)
+  // Note: This is a simplified calculation that doesn't account for timezone
+  // The app should send time in local timezone
+  uint32_t secondsSinceMidnight = currentEpoch % 86400;
+
+  return (int32_t)secondsSinceMidnight;
+}
+
+// Get current day of week (0=Sunday, 6=Saturday)
+// Returns -1 if time is not synchronized
+int8_t getCurrentDayOfWeek() {
+  if (!timeSync.synchronized) {
+    return -1;
+  }
+
+  // Calculate elapsed days since sync
+  unsigned long elapsedMillis = millis() - timeSync.syncMillis;
+  uint32_t elapsedDays = elapsedMillis / 86400000UL;
+
+  // Calculate current day of week
+  uint8_t currentDay = (timeSync.syncDayOfWeek + elapsedDays) % 7;
+
+  return (int8_t)currentDay;
+}
+
+// Check if current time matches scheduled time
+bool isScheduledTime() {
+  if (!bleControl.scheduleEnabled) {
+    return false;
+  }
+
+  if (!timeSync.synchronized) {
+    return false;
+  }
+
+  // Get current time
+  int32_t currentSeconds = getCurrentTimeOfDay();
+  int8_t currentDay = getCurrentDayOfWeek();
+
+  if (currentSeconds < 0 || currentDay < 0) {
+    return false;
+  }
+
+  // Check if today is a scheduled day
+  if (!(bleControl.scheduleDayMask & (1 << currentDay))) {
+    return false;
+  }
+
+  // Convert schedule time to seconds since midnight
+  int32_t scheduleSeconds = (bleControl.scheduleHour * 3600) + (bleControl.scheduleMinute * 60);
+
+  // Check if we're within the scheduled minute (give 60 second window)
+  int32_t timeDiff = abs(currentSeconds - scheduleSeconds);
+
+  return (timeDiff < 60);
+}
+
+// Update scheduling logic in main loop
+void updateScheduling() {
+  if (!bleControl.scheduleEnabled || !timeSync.synchronized) {
+    return;
+  }
+
+  // If waiting for scheduled start time
+  if (bleControl.waitingForScheduledStart) {
+    if (isScheduledTime()) {
+      // Time to start!
+      Serial.println("========================================");
+      Serial.println("SCHEDULED START TRIGGERED");
+      Serial.println("========================================");
+
+      // Start sunrise sequence
+      bleControl.waitingForScheduledStart = false;
+      bleControl.currentAppMode = 0x01;  // CYCLE mode
+      transitionToSequence(SEQ_SUNRISE_HOLD);
+    }
+  }
+
+  // Check if we should transition to night mode after sunset
+  if (bleControl.enableNightAfterSunset &&
+      progState.currentSequence == SEQ_SUNSET_PROG &&
+      progState.progressPercent >= 100.0) {
+
+    Serial.println("========================================");
+    Serial.println("SUNSET COMPLETE - TRANSITIONING TO NIGHT MODE");
+    Serial.println("========================================");
+
+    bleControl.currentAppMode = 0x02;  // NIGHT mode
+    bleControl.currentlyInAutoNight = true;
+
+    // Transition to night mode (same as pad 2 NIGHT mode handler)
+    progState.currentSequence = SEQ_NIGHT;
+    progState.isAnimating = false;
+
+    // Set horizon to night blue at low brightness
+    ColorGRBW nightHorizonColor = getPaletteColor(0);
+    float nightBrightness = BRIGHTNESS_MIN_FACTOR;
+
+    for(int i = 0; i < HORIZON_PIXELS; i++) {
+      horizon.setPixelColor(i, horizon.Color(
+        nightHorizonColor.r * nightBrightness,
+        nightHorizonColor.g * nightBrightness,
+        nightHorizonColor.b * nightBrightness,
+        nightHorizonColor.w * nightBrightness
+      ));
+    }
+    horizon.show();
+
+    // Set clouds to night color
+    ColorGRBW nightCloudColor = getCloudPaletteColor(0);
+    for(int i = 0; i < CLOUD_1_PIXELS; i++) {
+      cloud1State.currentPixelColors[i] = nightCloudColor;
+      cloud1.setPixelColor(i, cloud1.Color(
+        nightCloudColor.r * nightBrightness,
+        nightCloudColor.g * nightBrightness,
+        nightCloudColor.b * nightBrightness,
+        nightCloudColor.w * nightBrightness
+      ));
+    }
+    cloud1.show();
+
+    for(int i = 0; i < CLOUD_2_PIXELS; i++) {
+      cloud2State.currentPixelColors[i] = nightCloudColor;
+      cloud2.setPixelColor(i, cloud2.Color(
+        nightCloudColor.r * nightBrightness,
+        nightCloudColor.g * nightBrightness,
+        nightCloudColor.b * nightBrightness,
+        nightCloudColor.w * nightBrightness
+      ));
+    }
+    cloud2.show();
+
+    for(int i = 0; i < CLOUD_3_PIXELS; i++) {
+      cloud3State.currentPixelColors[i] = nightCloudColor;
+      cloud3.setPixelColor(i, cloud3.Color(
+        nightCloudColor.r * nightBrightness,
+        nightCloudColor.g * nightBrightness,
+        nightCloudColor.b * nightBrightness,
+        nightCloudColor.w * nightBrightness
+      ));
+    }
+    cloud3.show();
+
+    // Deactivate cloud patches
+    for(int i = 0; i < MAX_PATCHES_PER_CLOUD; i++) {
+      cloud1State.patches[i].active = false;
+      cloud2State.patches[i].active = false;
+      cloud3State.patches[i].active = false;
+    }
+
+    // Turn ON stars
+    digitalWrite(STARS_PIN, HIGH);
+  }
+}
+
 // ========== BLE CALLBACK CLASSES ==========
 
 // Server callbacks - handle connection/disconnection
@@ -1974,6 +2309,42 @@ class CycleConfigCallbacks: public BLECharacteristicCallbacks {
   }
 };
 
+// Schedule Config characteristic callbacks
+class ScheduleConfigCallbacks: public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) {
+    std::string value = pCharacteristic->getValue();
+
+    if (value.length() > 0) {
+      // Pass full buffer to handler
+      handleScheduleConfig((uint8_t*)value.data(), value.length());
+    }
+  }
+};
+
+// Storm Config characteristic callbacks
+class StormConfigCallbacks: public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) {
+    std::string value = pCharacteristic->getValue();
+
+    if (value.length() > 0) {
+      // Pass full buffer to handler
+      handleStormConfig((uint8_t*)value.data(), value.length());
+    }
+  }
+};
+
+// Time Sync characteristic callbacks
+class TimeSyncCallbacks: public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) {
+    std::string value = pCharacteristic->getValue();
+
+    if (value.length() > 0) {
+      // Pass full buffer to handler
+      handleTimeSync((uint8_t*)value.data(), value.length());
+    }
+  }
+};
+
 // ========== BLE INITIALIZATION ==========
 
 void initializeBLE() {
@@ -2002,24 +2373,28 @@ void initializeBLE() {
     CYCLE_CONFIG_UUID,
     BLECharacteristic::PROPERTY_WRITE
   );
+  pCycleConfigChar->setCallbacks(new CycleConfigCallbacks());
 
   // Create Schedule Config characteristic (Write only)
   pScheduleConfigChar = pService->createCharacteristic(
     SCHEDULE_CONFIG_UUID,
     BLECharacteristic::PROPERTY_WRITE
   );
+  pScheduleConfigChar->setCallbacks(new ScheduleConfigCallbacks());
 
   // Create Storm Config characteristic (Write only)
   pStormConfigChar = pService->createCharacteristic(
     STORM_CONFIG_UUID,
     BLECharacteristic::PROPERTY_WRITE
   );
+  pStormConfigChar->setCallbacks(new StormConfigCallbacks());
 
   // Create Time Sync characteristic (Write only)
   pTimeSyncChar = pService->createCharacteristic(
     TIME_SYNC_UUID,
     BLECharacteristic::PROPERTY_WRITE
   );
+  pTimeSyncChar->setCallbacks(new TimeSyncCallbacks());
 
   // Create Current State characteristic (Read + Notify)
   pCurrentStateChar = pService->createCharacteristic(
@@ -2307,13 +2682,42 @@ void loop() {
   // Update last touch state
   lastTouched = currentTouched;
 
+  // Periodic schedule status output (every 10 seconds when schedule enabled)
+  static unsigned long lastScheduleStatusTime = 0;
+  if (bleControl.scheduleEnabled && timeSync.synchronized) {
+    if (millis() - lastScheduleStatusTime > 10000) {
+      int32_t currentSeconds = getCurrentTimeOfDay();
+      int8_t currentDay = getCurrentDayOfWeek();
+
+      Serial.print("Schedule monitor - Current: ");
+      Serial.print(currentSeconds / 3600);
+      Serial.print(":");
+      int mins = (currentSeconds % 3600) / 60;
+      if (mins < 10) Serial.print("0");
+      Serial.print(mins);
+      Serial.print(" | Target: ");
+      if (bleControl.scheduleHour < 10) Serial.print("0");
+      Serial.print(bleControl.scheduleHour);
+      Serial.print(":");
+      if (bleControl.scheduleMinute < 10) Serial.print("0");
+      Serial.print(bleControl.scheduleMinute);
+      Serial.print(" | Waiting: ");
+      Serial.println(bleControl.waitingForScheduledStart ? "YES" : "NO");
+
+      lastScheduleStatusTime = millis();
+    }
+  }
+
   // Update progression if animating
   if (progState.isAnimating) {
     updateProgression();
   }
 
-  // Check for random storm trigger when in DAY mode
-  if (progState.currentSequence == SEQ_DAY) {
+  // Update scheduling logic (checks for scheduled start times)
+  updateScheduling();
+
+  // Check for random storm trigger when in DAY or NIGHT mode
+  if (progState.currentSequence == SEQ_DAY || progState.currentSequence == SEQ_NIGHT) {
     checkStormTrigger();
   }
 
@@ -2480,6 +2884,145 @@ void handleTouch(uint8_t pad) {
       Serial.println("========================================");
       if (stormState.stormEnabled) {
         stormState.lastStormCheckTime = millis();
+      }
+      break;
+    case 9:  // TIME SYNC TEST - Simulate time sync from BLE
+      {
+        // Test scenario: Sync to current day at 6:00 AM
+        // This allows testing scheduled start at 6:00 AM + offset seconds
+        Serial.println("========================================");
+        Serial.println("PAD 9 - TIME SYNC TEST");
+        Serial.println("Simulating BLE time sync command");
+
+        // Get current millis as base
+        unsigned long currentMillis = millis();
+
+        // Create a test timestamp for 6:00 AM today (21600 seconds = 6 hours)
+        // We'll use the current day and set time to just before 6:00 AM
+        // so we can trigger a scheduled event by pressing pad 10
+        uint32_t testTimestamp = 1704441600;  // Example: Jan 5, 2024, 6:00:00 AM UTC
+        uint8_t testDayOfWeek = 4;  // Thursday
+
+        // Manually build the BLE command (6 bytes)
+        uint8_t timeSyncData[6];
+        timeSyncData[0] = testTimestamp & 0xFF;
+        timeSyncData[1] = (testTimestamp >> 8) & 0xFF;
+        timeSyncData[2] = (testTimestamp >> 16) & 0xFF;
+        timeSyncData[3] = (testTimestamp >> 24) & 0xFF;
+        timeSyncData[4] = testDayOfWeek;
+        timeSyncData[5] = 0x00;  // Reserved
+
+        // Call the BLE handler
+        handleTimeSync(timeSyncData, 6);
+
+        Serial.println("Time sync test complete. Use pad 10 to test scheduling.");
+        Serial.println("========================================");
+      }
+      break;
+    case 10:  // SCHEDULE TEST - Set up test schedule and display status
+      {
+        Serial.println("========================================");
+        Serial.println("PAD 10 - SCHEDULE TEST");
+        Serial.println("Setting test schedule for 30 seconds from now");
+
+        // Calculate target time (30 seconds from now)
+        int32_t currentSeconds = getCurrentTimeOfDay();
+        if (currentSeconds < 0) {
+          Serial.println("ERROR: Time not synchronized! Press pad 9 first.");
+          Serial.println("========================================");
+          break;
+        }
+
+        int32_t targetSeconds = currentSeconds + 30;  // 30 seconds from now
+        if (targetSeconds >= 86400) targetSeconds -= 86400;  // Wrap at midnight
+
+        uint8_t targetHour = targetSeconds / 3600;
+        uint8_t targetMinute = (targetSeconds % 3600) / 60;
+
+        // Get current day
+        int8_t currentDay = getCurrentDayOfWeek();
+        uint8_t dayMask = (1 << currentDay);  // Today only
+
+        // Build schedule config BLE command (5 bytes)
+        uint8_t scheduleData[5];
+        scheduleData[0] = 0x01;  // Enabled
+        scheduleData[1] = targetHour;
+        scheduleData[2] = targetMinute;
+        scheduleData[3] = dayMask;
+        scheduleData[4] = 0x00;  // No night after sunset
+
+        // Call the BLE handler
+        handleScheduleConfig(scheduleData, 5);
+
+        Serial.println();
+        Serial.println("TEST SCHEDULE STATUS:");
+        Serial.print("  Current time: ");
+        Serial.print(getCurrentTimeOfDay() / 3600);
+        Serial.print(":");
+        Serial.print((getCurrentTimeOfDay() % 3600) / 60);
+        Serial.print(":");
+        Serial.println(getCurrentTimeOfDay() % 60);
+
+        Serial.print("  Scheduled time: ");
+        if (targetHour < 10) Serial.print("0");
+        Serial.print(targetHour);
+        Serial.print(":");
+        if (targetMinute < 10) Serial.print("0");
+        Serial.println(targetMinute);
+
+        Serial.println();
+        Serial.println("Wait 30 seconds for scheduled sunrise to start...");
+        Serial.println("========================================");
+      }
+      break;
+    case 11:  // SCHEDULE STATUS - Display current time and schedule status
+      {
+        Serial.println("========================================");
+        Serial.println("PAD 11 - SCHEDULE STATUS");
+
+        if (!timeSync.synchronized) {
+          Serial.println("Time: NOT SYNCHRONIZED");
+          Serial.println("Press pad 9 to sync time");
+        } else {
+          int32_t currentSeconds = getCurrentTimeOfDay();
+          int8_t currentDay = getCurrentDayOfWeek();
+
+          Serial.print("Current time: ");
+          Serial.print(currentSeconds / 3600);
+          Serial.print(":");
+          int mins = (currentSeconds % 3600) / 60;
+          if (mins < 10) Serial.print("0");
+          Serial.print(mins);
+          Serial.print(":");
+          int secs = currentSeconds % 60;
+          if (secs < 10) Serial.print("0");
+          Serial.println(secs);
+
+          const char* dayNames[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+          Serial.print("Day: ");
+          Serial.println(dayNames[currentDay]);
+        }
+
+        Serial.println();
+        Serial.print("Schedule enabled: ");
+        Serial.println(bleControl.scheduleEnabled ? "YES" : "NO");
+
+        if (bleControl.scheduleEnabled) {
+          Serial.print("Scheduled time: ");
+          if (bleControl.scheduleHour < 10) Serial.print("0");
+          Serial.print(bleControl.scheduleHour);
+          Serial.print(":");
+          if (bleControl.scheduleMinute < 10) Serial.print("0");
+          Serial.println(bleControl.scheduleMinute);
+
+          Serial.print("Waiting for start: ");
+          Serial.println(bleControl.waitingForScheduledStart ? "YES" : "NO");
+
+          Serial.print("Night after sunset: ");
+          Serial.println(bleControl.enableNightAfterSunset ? "YES" : "NO");
+        }
+
+        Serial.println("========================================");
       }
       break;
     default:
