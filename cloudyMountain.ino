@@ -1635,6 +1635,84 @@ void scheduleNextLightning() {
   Serial.println("ms");
 }
 
+// ========== BLE COMMAND HANDLERS ==========
+
+// Handle mode control commands from BLE
+void handleModeControl(uint8_t mode) {
+  Serial.print("BLE: Mode control received: 0x");
+  Serial.println(mode, HEX);
+
+  switch(mode) {
+    case 0x00: // OFF mode
+      {
+        Serial.println("BLE: Setting OFF mode");
+        bleControl.currentAppMode = 0x00;
+
+        // Stop any active sequences first
+        progState.currentSequence = SEQ_OFF;
+        progState.isAnimating = false;
+
+        // Clear all cloud state arrays (set to black)
+        ColorGRBW blackColor = {0, 0, 0, 0};
+        for(int i = 0; i < CLOUD_1_PIXELS; i++) {
+          cloud1State.currentPixelColors[i] = blackColor;
+        }
+        for(int i = 0; i < CLOUD_2_PIXELS; i++) {
+          cloud2State.currentPixelColors[i] = blackColor;
+        }
+        for(int i = 0; i < CLOUD_3_PIXELS; i++) {
+          cloud3State.currentPixelColors[i] = blackColor;
+        }
+
+        // Deactivate all cloud patches
+        for(int i = 0; i < MAX_PATCHES_PER_CLOUD; i++) {
+          cloud1State.patches[i].active = false;
+          cloud2State.patches[i].active = false;
+          cloud3State.patches[i].active = false;
+        }
+
+        // Turn off all LED strands
+        for(int i = 0; i < HORIZON_PIXELS; i++) {
+          horizon.setPixelColor(i, 0, 0, 0, 0);
+        }
+        horizon.show();
+
+        for(int i = 0; i < CLOUD_1_PIXELS; i++) {
+          cloud1.setPixelColor(i, 0, 0, 0, 0);
+        }
+        cloud1.show();
+
+        for(int i = 0; i < CLOUD_2_PIXELS; i++) {
+          cloud2.setPixelColor(i, 0, 0, 0, 0);
+        }
+        cloud2.show();
+
+        for(int i = 0; i < CLOUD_3_PIXELS; i++) {
+          cloud3.setPixelColor(i, 0, 0, 0, 0);
+        }
+        cloud3.show();
+
+        // Turn off stars (simple digital pin control)
+        digitalWrite(STARS_PIN, LOW);
+
+        Serial.println("BLE: All LEDs OFF");
+      }
+      break;
+
+    case 0x03: // DAY mode
+      Serial.println("BLE: Jumping to DAY mode");
+      bleControl.currentAppMode = 0x03;
+      transitionToSequence(SEQ_DAY);
+      Serial.println("BLE: Day mode active");
+      break;
+
+    default:
+      Serial.print("BLE: Unknown mode command: 0x");
+      Serial.println(mode, HEX);
+      break;
+  }
+}
+
 // ========== BLE CALLBACK CLASSES ==========
 
 // Server callbacks - handle connection/disconnection
@@ -1647,6 +1725,18 @@ class MyServerCallbacks: public BLEServerCallbacks {
   void onDisconnect(BLEServer* pServer) {
     deviceConnected = false;
     Serial.println("BLE: Device disconnected");
+  }
+};
+
+// Mode Control characteristic callbacks
+class ModeControlCallbacks: public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *pCharacteristic) {
+    std::string value = pCharacteristic->getValue();
+
+    if (value.length() > 0) {
+      uint8_t mode = (uint8_t)value[0];
+      handleModeControl(mode);
+    }
   }
 };
 
@@ -1671,6 +1761,7 @@ void initializeBLE() {
     MODE_CONTROL_UUID,
     BLECharacteristic::PROPERTY_WRITE
   );
+  pModeControlChar->setCallbacks(new ModeControlCallbacks());
 
   // Create Cycle Config characteristic (Write only)
   pCycleConfigChar = pService->createCharacteristic(
