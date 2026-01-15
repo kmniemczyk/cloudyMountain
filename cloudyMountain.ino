@@ -68,8 +68,19 @@ Adafruit_NeoPixel cloud2 = Adafruit_NeoPixel(CLOUD_2_PIXELS, CLOUD_2_PIN, NEO_GR
 Adafruit_NeoPixel cloud3 = Adafruit_NeoPixel(CLOUD_3_PIXELS, CLOUD_3_PIN, NEO_GRBW + NEO_KHZ800);
 Adafruit_NeoPixel horizon = Adafruit_NeoPixel(HORIZON_PIXELS, HORIZON_PIN, NEO_GRBW + NEO_KHZ800);
 
-// Stars are simple on/off white LEDs (not addressable)
-bool starsOn = true;  // Default to ON
+// Stars PWM control (fade in/out over 5 seconds)
+#define STAR_FADE_DURATION_MS 5000  // 5 second fade
+
+// Star fade state
+struct StarState {
+  float currentBrightness;      // 0.0 to 1.0
+  float targetBrightness;       // 0.0 to 1.0
+  unsigned long fadeStartTime;  // When fade began
+  bool isFading;                // Currently fading?
+};
+
+// Global star state
+StarState starState = {0.0, 0.0, 0, false};
 
 // Initialize MPR121 touch sensor
 Adafruit_MPR121 touchSensor = Adafruit_MPR121();
@@ -925,8 +936,7 @@ void updateProgression() {
             cloud3State.patches[i].active = false;
           }
 
-          // Turn OFF stars for day mode
-          digitalWrite(STARS_PIN, LOW);
+          // Stars handled by updateStarVisibility() in main loop
 
           Serial.print("DAY mode: Clouds set to cloudPalette[38] RGBW: (");
           Serial.print(cloudDayColor.r); Serial.print(", ");
@@ -1033,8 +1043,7 @@ void updateProgression() {
       cloud3State.patches[i].active = false;
     }
 
-    // Turn OFF stars for day mode
-    digitalWrite(STARS_PIN, LOW);
+    // Stars handled by updateStarVisibility() in main loop
 
     Serial.print("Clouds set to cloudPalette[38] RGBW: (");
     Serial.print(cloudDayColor.r); Serial.print(", ");
@@ -1643,6 +1652,96 @@ void scheduleNextLightning() {
   Serial.println("ms");
 }
 
+// ========== STAR FADE SYSTEM ==========
+
+// Set target brightness for stars (triggers fade if different from current)
+void setStarBrightness(float targetBrightness) {
+  // Clamp to valid range
+  if (targetBrightness < 0.0) targetBrightness = 0.0;
+  if (targetBrightness > 1.0) targetBrightness = 1.0;
+
+  // Only start a new fade if target is different
+  if (abs(targetBrightness - starState.targetBrightness) > 0.01) {
+    starState.targetBrightness = targetBrightness;
+    starState.fadeStartTime = millis();
+    starState.isFading = true;
+  }
+}
+
+// Update star fade and apply PWM
+void updateStarFade() {
+  if (!starState.isFading) {
+    return;  // Not fading, nothing to do
+  }
+
+  unsigned long elapsed = millis() - starState.fadeStartTime;
+  float fadeProgress = min(1.0f, (float)elapsed / (float)STAR_FADE_DURATION_MS);
+
+  // Calculate current brightness based on fade progress
+  float startBrightness = starState.currentBrightness;
+  starState.currentBrightness = startBrightness + (starState.targetBrightness - startBrightness) * fadeProgress;
+
+  // Apply PWM to stars pin (0-255)
+  analogWrite(STARS_PIN, (uint8_t)(starState.currentBrightness * 255));
+
+  // Check if fade complete
+  if (fadeProgress >= 1.0f) {
+    starState.isFading = false;
+    starState.currentBrightness = starState.targetBrightness;
+  }
+}
+
+// Determine if stars should be visible based on current sequence and progress
+void updateStarVisibility() {
+  float targetBrightness = 0.0;  // Default: off
+
+  // Check storm state first - stars always off during storms
+  if (progState.currentSequence == SEQ_STORM_DIM ||
+      progState.currentSequence == SEQ_STORM_ACTIVE ||
+      progState.currentSequence == SEQ_STORM_CLEAR) {
+    targetBrightness = 0.0;
+  }
+  // Night mode - stars always on
+  else if (progState.currentSequence == SEQ_NIGHT) {
+    targetBrightness = 1.0;
+  }
+  // Day mode - stars always off
+  else if (progState.currentSequence == SEQ_DAY) {
+    targetBrightness = 0.0;
+  }
+  // Sunrise hold - stars on
+  else if (progState.currentSequence == SEQ_SUNRISE_HOLD ||
+           progState.currentSequence == SEQ_TEST_SUNRISE_HOLD) {
+    targetBrightness = 1.0;
+  }
+  // Sunrise progression - stars on for first 50%, then fade out
+  else if (progState.currentSequence == SEQ_SUNRISE_PROG ||
+           progState.currentSequence == SEQ_TEST_SUNRISE_PROG) {
+    if (progState.progressPercent <= 50.0) {
+      targetBrightness = 1.0;  // First half: stars on
+    } else {
+      targetBrightness = 0.0;  // Second half: stars off
+    }
+  }
+  // Sunset progression - stars off for first 50%, then fade in
+  else if (progState.currentSequence == SEQ_SUNSET_PROG) {
+    if (progState.progressPercent <= 50.0) {
+      targetBrightness = 0.0;  // First half: stars off
+    } else {
+      targetBrightness = 1.0;  // Second half: stars on
+    }
+  }
+  // OFF mode - stars off
+  else if (progState.currentSequence == SEQ_OFF) {
+    targetBrightness = 0.0;
+  }
+
+  // Set target brightness (will trigger fade if needed)
+  setStarBrightness(targetBrightness);
+}
+
+// ========== END STAR FADE SYSTEM ==========
+
 // ========== BLE COMMAND HANDLERS ==========
 
 // Handle mode control commands from BLE
@@ -1706,8 +1805,7 @@ void handleModeControl(uint8_t* data, size_t length) {
         }
         cloud3.show();
 
-        // Turn off stars (simple digital pin control)
-        digitalWrite(STARS_PIN, LOW);
+        // Stars handled by updateStarVisibility() in main loop
 
         Serial.println("BLE: All LEDs OFF");
       }
@@ -1788,6 +1886,29 @@ void handleModeControl(uint8_t* data, size_t length) {
             Serial.println("BLE: Starting new cycle (not paused)");
             bleControl.currentAppMode = 0x01;
             bleControl.isPaused = false;
+
+            // Reset clouds to night colors before starting cycle
+            ColorGRBW nightCloudColor = getCloudPaletteColor(0);  // Night cloud color
+            float nightBrightness = BRIGHTNESS_MIN_FACTOR;         // 0.125 (12.5%)
+
+            // Update cloud state arrays to night colors
+            for(int i = 0; i < CLOUD_1_PIXELS; i++) {
+              cloud1State.currentPixelColors[i] = nightCloudColor;
+            }
+            for(int i = 0; i < CLOUD_2_PIXELS; i++) {
+              cloud2State.currentPixelColors[i] = nightCloudColor;
+            }
+            for(int i = 0; i < CLOUD_3_PIXELS; i++) {
+              cloud3State.currentPixelColors[i] = nightCloudColor;
+            }
+
+            // Deactivate any active cloud patches
+            for(int i = 0; i < MAX_PATCHES_PER_CLOUD; i++) {
+              cloud1State.patches[i].active = false;
+              cloud2State.patches[i].active = false;
+              cloud3State.patches[i].active = false;
+            }
+
             transitionToSequence(SEQ_SUNRISE_HOLD);
           }
         }
@@ -1865,8 +1986,7 @@ void handleModeControl(uint8_t* data, size_t length) {
           cloud3State.patches[i].active = false;
         }
 
-        // Turn ON stars for night mode
-        digitalWrite(STARS_PIN, HIGH);
+        // Stars handled by updateStarVisibility() in main loop
 
         Serial.println("BLE: Night mode active (low brightness, stars ON)");
       }
@@ -1877,6 +1997,75 @@ void handleModeControl(uint8_t* data, size_t length) {
       bleControl.currentAppMode = 0x03;
       transitionToSequence(SEQ_DAY);
       Serial.println("BLE: Day mode active");
+      break;
+
+    case 0x04: // SUNSET mode
+      {
+        Serial.println("BLE: Starting SUNSET sequence");
+        bleControl.currentAppMode = 0x04;
+
+        // Initialize to DAY colors (palette index 38) before starting progression
+        ColorGRBW dayHorizonColor = getPaletteColor(38);  // Bright cyan
+        float dayBrightness = BRIGHTNESS_MAX_FACTOR;      // 1.0 (100%)
+
+        for(int i = 0; i < HORIZON_PIXELS; i++) {
+          horizon.setPixelColor(i, horizon.Color(
+            dayHorizonColor.r * dayBrightness,
+            dayHorizonColor.g * dayBrightness,
+            dayHorizonColor.b * dayBrightness,
+            dayHorizonColor.w * dayBrightness
+          ));
+        }
+        horizon.show();
+
+        // Set clouds to day color (cloudPalette index 38) at full brightness
+        ColorGRBW dayCloudColor = getCloudPaletteColor(38);  // Day cloud color
+
+        // Update cloud state arrays
+        for(int i = 0; i < CLOUD_1_PIXELS; i++) {
+          cloud1State.currentPixelColors[i] = dayCloudColor;
+          cloud1.setPixelColor(i, cloud1.Color(
+            dayCloudColor.r * dayBrightness,
+            dayCloudColor.g * dayBrightness,
+            dayCloudColor.b * dayBrightness,
+            dayCloudColor.w * dayBrightness
+          ));
+        }
+        cloud1.show();
+
+        for(int i = 0; i < CLOUD_2_PIXELS; i++) {
+          cloud2State.currentPixelColors[i] = dayCloudColor;
+          cloud2.setPixelColor(i, cloud2.Color(
+            dayCloudColor.r * dayBrightness,
+            dayCloudColor.g * dayBrightness,
+            dayCloudColor.b * dayBrightness,
+            dayCloudColor.w * dayBrightness
+          ));
+        }
+        cloud2.show();
+
+        for(int i = 0; i < CLOUD_3_PIXELS; i++) {
+          cloud3State.currentPixelColors[i] = dayCloudColor;
+          cloud3.setPixelColor(i, cloud3.Color(
+            dayCloudColor.r * dayBrightness,
+            dayCloudColor.g * dayBrightness,
+            dayCloudColor.b * dayBrightness,
+            dayCloudColor.w * dayBrightness
+          ));
+        }
+        cloud3.show();
+
+        // Deactivate all cloud patches before starting progression
+        for(int i = 0; i < MAX_PATCHES_PER_CLOUD; i++) {
+          cloud1State.patches[i].active = false;
+          cloud2State.patches[i].active = false;
+          cloud3State.patches[i].active = false;
+        }
+
+        // Now start the sunset progression (38 → 0 over 20 minutes)
+        transitionToSequence(SEQ_SUNSET_PROG);
+        Serial.println("BLE: Sunset sequence started (20min progression from day to night)");
+      }
       break;
 
     default:
@@ -2266,8 +2455,7 @@ void updateScheduling() {
       cloud3State.patches[i].active = false;
     }
 
-    // Turn ON stars
-    digitalWrite(STARS_PIN, HIGH);
+    // Stars handled by updateStarVisibility() in main loop
   }
 }
 
@@ -2586,10 +2774,10 @@ void setup() {
 
   Serial.println("Cloud states initialized (all patches inactive, starting in deep blue)");
 
-  // Initialize stars pin as output and turn on by default
+  // Initialize stars pin as PWM output (starts at 0)
   pinMode(STARS_PIN, OUTPUT);
-  digitalWrite(STARS_PIN, HIGH);  // Turn stars ON by default
-  Serial.println("Stars turned ON");
+  analogWrite(STARS_PIN, 0);  // Start with stars off
+  Serial.println("Stars PWM initialized (0%)");
 
   Serial.println("Setup complete!");
 }
@@ -2734,6 +2922,10 @@ void loop() {
     updateCloudPatches(cloud2State, cloud2);
     updateCloudPatches(cloud3State, cloud3);
   }
+
+  // Update star visibility and fade
+  updateStarVisibility();
+  updateStarFade();
 
   // Small delay to avoid overwhelming the serial output
   delay(10);
