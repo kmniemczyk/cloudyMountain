@@ -382,10 +382,10 @@ BLEControlState bleControl = {
   false,    // isPaused
   0,        // pausedTimeRemaining
   0,        // pauseStartTime
-  60,       // sunCycleDayDurationMinutes (1 hour default)
+  20,       // sunCycleDayDurationMinutes (20 min default: 10min sunrise + 10min sunset)
   10,       // sunriseDurationMinutes (10 min)
   10,       // sunsetDurationMinutes (10 min)
-  2400000,  // calculatedDaylightDuration (40 min default in ms)
+  0,        // calculatedDaylightDuration (0 min - no hold, direct to DAY mode)
   600000,   // calculatedSunriseDuration (10 min in ms)
   600000,   // calculatedSunsetDuration (10 min in ms)
   false,    // scheduleEnabled
@@ -885,8 +885,8 @@ void updateProgression() {
         return;  // Exit and let next loop iteration handle the new state
 
       case SEQ_SUNRISE_PROG:
-        Serial.println("Sunrise progression complete! Starting daylight hold...");
-        transitionToSequence(SEQ_DAY_HOLD);
+        Serial.println("Sunrise progression complete! Transitioning to DAY mode...");
+        transitionToSequence(SEQ_DAY);
         return;  // Exit and let next loop iteration handle the new state
 
       case SEQ_DAY_HOLD:
@@ -1113,6 +1113,95 @@ void updateProgression() {
 
     // Update tracking variable
     lastHorizonColorIndex = currentHorizonColorIndex;
+  }
+
+  // Gradual cloud base color transition during sunrise/sunset progression
+  if (progState.currentSequence == SEQ_SUNRISE_PROG || progState.currentSequence == SEQ_TEST_SUNRISE_PROG ||
+      progState.currentSequence == SEQ_SUNSET_PROG) {
+
+    // Get target cloud base color based on current palette position
+    ColorGRBW cloudBaseColor = getCloudPaletteColor((uint8_t)palPos);
+    float blendFactor = 0.05;  // 5% blend per frame for smooth transition
+
+    // Update CLOUD_1 base colors (skip pixels with active patches)
+    for (int i = 0; i < CLOUD_1_PIXELS; i++) {
+      bool hasActivePatch = false;
+
+      // Check if this pixel is part of an active patch
+      for (int p = 0; p < MAX_PATCHES_PER_CLOUD; p++) {
+        if (cloud1State.patches[p].active) {
+          CloudPatch &patch = cloud1State.patches[p];
+          int halfSize = patch.patchSize / 2;
+          int startPixel = patch.centerPixel - halfSize;
+          int endPixel = startPixel + patch.patchSize;
+          if (i >= startPixel && i < endPixel) {
+            hasActivePatch = true;
+            break;
+          }
+        }
+      }
+
+      // Only blend base color for pixels without active patches
+      if (!hasActivePatch) {
+        ColorGRBW &currentColor = cloud1State.currentPixelColors[i];
+        currentColor.r = currentColor.r + (cloudBaseColor.r - currentColor.r) * blendFactor;
+        currentColor.g = currentColor.g + (cloudBaseColor.g - currentColor.g) * blendFactor;
+        currentColor.b = currentColor.b + (cloudBaseColor.b - currentColor.b) * blendFactor;
+        currentColor.w = currentColor.w + (cloudBaseColor.w - currentColor.w) * blendFactor;
+      }
+    }
+
+    // Update CLOUD_2 base colors
+    for (int i = 0; i < CLOUD_2_PIXELS; i++) {
+      bool hasActivePatch = false;
+
+      for (int p = 0; p < MAX_PATCHES_PER_CLOUD; p++) {
+        if (cloud2State.patches[p].active) {
+          CloudPatch &patch = cloud2State.patches[p];
+          int halfSize = patch.patchSize / 2;
+          int startPixel = patch.centerPixel - halfSize;
+          int endPixel = startPixel + patch.patchSize;
+          if (i >= startPixel && i < endPixel) {
+            hasActivePatch = true;
+            break;
+          }
+        }
+      }
+
+      if (!hasActivePatch) {
+        ColorGRBW &currentColor = cloud2State.currentPixelColors[i];
+        currentColor.r = currentColor.r + (cloudBaseColor.r - currentColor.r) * blendFactor;
+        currentColor.g = currentColor.g + (cloudBaseColor.g - currentColor.g) * blendFactor;
+        currentColor.b = currentColor.b + (cloudBaseColor.b - currentColor.b) * blendFactor;
+        currentColor.w = currentColor.w + (cloudBaseColor.w - currentColor.w) * blendFactor;
+      }
+    }
+
+    // Update CLOUD_3 base colors
+    for (int i = 0; i < CLOUD_3_PIXELS; i++) {
+      bool hasActivePatch = false;
+
+      for (int p = 0; p < MAX_PATCHES_PER_CLOUD; p++) {
+        if (cloud3State.patches[p].active) {
+          CloudPatch &patch = cloud3State.patches[p];
+          int halfSize = patch.patchSize / 2;
+          int startPixel = patch.centerPixel - halfSize;
+          int endPixel = startPixel + patch.patchSize;
+          if (i >= startPixel && i < endPixel) {
+            hasActivePatch = true;
+            break;
+          }
+        }
+      }
+
+      if (!hasActivePatch) {
+        ColorGRBW &currentColor = cloud3State.currentPixelColors[i];
+        currentColor.r = currentColor.r + (cloudBaseColor.r - currentColor.r) * blendFactor;
+        currentColor.g = currentColor.g + (cloudBaseColor.g - currentColor.g) * blendFactor;
+        currentColor.b = currentColor.b + (cloudBaseColor.b - currentColor.b) * blendFactor;
+        currentColor.w = currentColor.w + (cloudBaseColor.w - currentColor.w) * blendFactor;
+      }
+    }
   }
 
   // Apply brightness multiplier (keep for future cloud use)
