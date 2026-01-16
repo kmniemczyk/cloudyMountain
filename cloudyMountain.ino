@@ -351,9 +351,9 @@ struct BLEControlState {
   unsigned long pauseStartTime;       // When pause was initiated
 
   // Configurable cycle duration
-  uint16_t sunCycleDayDurationMinutes;  // Total day cycle duration (default 60)
-  uint16_t sunriseDurationMinutes;      // Sunrise progression time (default 10)
-  uint16_t sunsetDurationMinutes;       // Sunset progression time (default 10)
+  uint16_t sunCycleDayDurationMinutes;  // Total day cycle duration (default 120 = 2 hours)
+  uint16_t sunriseDurationMinutes;      // Sunrise progression time (default 15)
+  uint16_t sunsetDurationMinutes;       // Sunset progression time (default 15)
   uint32_t calculatedDaylightDuration;  // Calculated daylight hold in ms
   uint32_t calculatedSunriseDuration;   // Sunrise duration in ms
   uint32_t calculatedSunsetDuration;    // Sunset duration in ms
@@ -382,12 +382,12 @@ BLEControlState bleControl = {
   false,    // isPaused
   0,        // pausedTimeRemaining
   0,        // pauseStartTime
-  20,       // sunCycleDayDurationMinutes (20 min default: 10min sunrise + 10min sunset)
-  10,       // sunriseDurationMinutes (10 min)
-  10,       // sunsetDurationMinutes (10 min)
-  0,        // calculatedDaylightDuration (0 min - no hold, direct to DAY mode)
-  600000,   // calculatedSunriseDuration (10 min in ms)
-  600000,   // calculatedSunsetDuration (10 min in ms)
+  120,      // sunCycleDayDurationMinutes (2 hours default)
+  15,       // sunriseDurationMinutes (15 min default)
+  15,       // sunsetDurationMinutes (15 min default)
+  5400000,  // calculatedDaylightDuration (90 min = 2hr - 15min - 15min, in ms)
+  900000,   // calculatedSunriseDuration (15 min in ms)
+  900000,   // calculatedSunsetDuration (15 min in ms)
   false,    // scheduleEnabled
   6,        // scheduleHour (default 6 AM)
   0,        // scheduleMinute
@@ -2253,18 +2253,27 @@ void handleCycleConfig(uint8_t* data, size_t length) {
   Serial.println(" minutes");
 
   // Validate values
+  // Sun Cycle Duration: 1 to 14 hours (60 to 840 minutes)
+  if (sunCycleDayDuration < 60 || sunCycleDayDuration > 840) {
+    Serial.println("BLE: Error - Sun Cycle Day Duration must be 60-840 minutes (1-14 hours)");
+    return;
+  }
+
+  // Sunrise Duration: 5 to 20 minutes
+  if (sunriseDuration < 5 || sunriseDuration > 20) {
+    Serial.println("BLE: Error - Sunrise Duration must be 5-20 minutes");
+    return;
+  }
+
+  // Sunset Duration: 5 to 20 minutes
+  if (sunsetDuration < 5 || sunsetDuration > 20) {
+    Serial.println("BLE: Error - Sunset Duration must be 5-20 minutes");
+    return;
+  }
+
+  // Ensure sunrise + sunset durations fit within total cycle duration
   if (sunriseDuration + sunsetDuration >= sunCycleDayDuration) {
     Serial.println("BLE: Error - Sunrise + Sunset duration must be less than total day duration");
-    return;
-  }
-
-  if (sunCycleDayDuration < 3 || sunCycleDayDuration > 1440) {  // Min 3 min, Max 24 hours
-    Serial.println("BLE: Error - Sun Cycle Day Duration must be 3-1440 minutes");
-    return;
-  }
-
-  if (sunriseDuration < 1 || sunsetDuration < 1) {
-    Serial.println("BLE: Error - Sunrise and Sunset durations must be at least 1 minute");
     return;
   }
 
@@ -2882,36 +2891,36 @@ void setup() {
   horizon.show();
 
   // Calculate cloud zone boundaries (divide each cloud into thirds)
-  // CLOUD_1: 32 pixels → lower: 22-31 (10px), middle: 11-21 (11px), upper: 0-10 (11px)
-  cloud1Zones.lowerStart = 22;
-  cloud1Zones.lowerEnd = 31;
+  // CLOUD_1: 32 pixels → lower: 0-10 (11px), middle: 11-21 (11px), upper: 22-31 (10px)
+  cloud1Zones.lowerStart = 0;
+  cloud1Zones.lowerEnd = 10;
   cloud1Zones.middleStart = 11;
   cloud1Zones.middleEnd = 21;
-  cloud1Zones.upperStart = 0;
-  cloud1Zones.upperEnd = 10;
+  cloud1Zones.upperStart = 22;
+  cloud1Zones.upperEnd = 31;
 
-  // CLOUD_2: 45 pixels → lower: 30-44 (15px), middle: 15-29 (15px), upper: 0-14 (15px)
-  cloud2Zones.lowerStart = 30;
-  cloud2Zones.lowerEnd = 44;
+  // CLOUD_2: 45 pixels → lower: 0-14 (15px), middle: 15-29 (15px), upper: 30-44 (15px)
+  cloud2Zones.lowerStart = 0;
+  cloud2Zones.lowerEnd = 14;
   cloud2Zones.middleStart = 15;
   cloud2Zones.middleEnd = 29;
-  cloud2Zones.upperStart = 0;
-  cloud2Zones.upperEnd = 14;
+  cloud2Zones.upperStart = 30;
+  cloud2Zones.upperEnd = 44;
 
-  // CLOUD_3: 46 pixels → lower: 31-45 (15px), middle: 16-30 (15px), upper: 0-15 (16px)
-  cloud3Zones.lowerStart = 31;
-  cloud3Zones.lowerEnd = 45;
+  // CLOUD_3: 46 pixels → lower: 0-15 (16px), middle: 16-30 (15px), upper: 31-45 (15px)
+  cloud3Zones.lowerStart = 0;
+  cloud3Zones.lowerEnd = 15;
   cloud3Zones.middleStart = 16;
   cloud3Zones.middleEnd = 30;
-  cloud3Zones.upperStart = 0;
-  cloud3Zones.upperEnd = 15;
+  cloud3Zones.upperStart = 31;
+  cloud3Zones.upperEnd = 45;
 
   Serial.println("Cloud zones calculated:");
-  Serial.print("  CLOUD_1: lower[22-31] middle[11-21] upper[0-10]");
+  Serial.print("  CLOUD_1: lower[0-10] middle[11-21] upper[22-31]");
   Serial.println();
-  Serial.print("  CLOUD_2: lower[30-44] middle[15-29] upper[0-14]");
+  Serial.print("  CLOUD_2: lower[0-14] middle[15-29] upper[30-44]");
   Serial.println();
-  Serial.print("  CLOUD_3: lower[31-45] middle[16-30] upper[0-15]");
+  Serial.print("  CLOUD_3: lower[0-15] middle[16-30] upper[31-45]");
   Serial.println();
 
   // Initialize cloud states
