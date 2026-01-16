@@ -106,10 +106,11 @@ CloudZones cloud1Zones, cloud2Zones, cloud3Zones;
 typedef enum {
   SEQ_OFF,
   SEQ_SUNRISE_HOLD,      // Hold at night blue before sunrise (2min)
-  SEQ_SUNRISE_PROG,      // Sunrise progression (20min)
-  SEQ_DAY,               // Daytime mode
+  SEQ_SUNRISE_PROG,      // Sunrise progression (configurable)
+  SEQ_DAY_HOLD,          // Timed daylight hold (configurable)
+  SEQ_DAY,               // Daytime mode (static, infinite)
   SEQ_NIGHT,             // Night mode (static, low brightness)
-  SEQ_SUNSET_PROG,       // Sunset progression (reverse)
+  SEQ_SUNSET_PROG,       // Sunset progression (configurable)
   SEQ_TEST_SUNRISE_HOLD, // Fast test hold (10sec)
   SEQ_TEST_SUNRISE_PROG, // Fast test progression (3min 50sec)
   SEQ_STORM_DIM,         // Dimming clouds to 25% (60 seconds)
@@ -350,10 +351,12 @@ struct BLEControlState {
   unsigned long pauseStartTime;       // When pause was initiated
 
   // Configurable cycle duration
-  uint16_t cycleDurationMinutes;      // Total cycle duration (default 22)
-  uint16_t holdDurationMinutes;       // Hold before sunrise (default 2)
-  uint32_t calculatedProgressDuration; // Calculated progression time in ms
-  uint32_t calculatedHoldDuration;     // Calculated hold time in ms
+  uint16_t sunCycleDayDurationMinutes;  // Total day cycle duration (default 60)
+  uint16_t sunriseDurationMinutes;      // Sunrise progression time (default 10)
+  uint16_t sunsetDurationMinutes;       // Sunset progression time (default 10)
+  uint32_t calculatedDaylightDuration;  // Calculated daylight hold in ms
+  uint32_t calculatedSunriseDuration;   // Sunrise duration in ms
+  uint32_t calculatedSunsetDuration;    // Sunset duration in ms
 
   // Scheduling
   bool scheduleEnabled;
@@ -379,10 +382,12 @@ BLEControlState bleControl = {
   false,    // isPaused
   0,        // pausedTimeRemaining
   0,        // pauseStartTime
-  22,       // cycleDurationMinutes (default: 2min hold + 20min prog)
-  2,        // holdDurationMinutes
-  1200000,  // calculatedProgressDuration (20 min default in ms)
-  120000,   // calculatedHoldDuration (2 min default in ms)
+  60,       // sunCycleDayDurationMinutes (1 hour default)
+  10,       // sunriseDurationMinutes (10 min)
+  10,       // sunsetDurationMinutes (10 min)
+  2400000,  // calculatedDaylightDuration (40 min default in ms)
+  600000,   // calculatedSunriseDuration (10 min in ms)
+  600000,   // calculatedSunsetDuration (10 min in ms)
   false,    // scheduleEnabled
   6,        // scheduleHour (default 6 AM)
   0,        // scheduleMinute
@@ -600,28 +605,25 @@ uint8_t lastHorizonColorIndex = 0;
 
 // Select which zone to place a patch based on horizon color progression
 CloudZone selectZoneForHorizonColor(uint8_t horizonColorIndex) {
-  // Divide 39 colors into quarters: 1-9, 10-19, 20-29, 30-39
-
-  if (horizonColorIndex >= 1 && horizonColorIndex <= 9) {
-    // First quarter: 90% lower, 10% middle
-    return (random(100) < 90) ? ZONE_LOWER : ZONE_MIDDLE;
+  // Early sunrise (1-12): patches only in lower zone
+  if (horizonColorIndex >= 1 && horizonColorIndex <= 12) {
+    return ZONE_LOWER;
   }
-  else if (horizonColorIndex >= 10 && horizonColorIndex <= 19) {
-    // Second quarter: 70% middle, 25% lower, 5% upper
+  // Mid sunrise (13-25): patches in lower and middle zones
+  else if (horizonColorIndex >= 13 && horizonColorIndex <= 25) {
+    return (random(100) < 50) ? ZONE_LOWER : ZONE_MIDDLE;
+  }
+  // Late sunrise (26-37): patches mixed across all zones
+  else if (horizonColorIndex >= 26 && horizonColorIndex <= 37) {
     int r = random(100);
-    if (r < 70) return ZONE_MIDDLE;
-    else if (r < 95) return ZONE_LOWER;
+    if (r < 33) return ZONE_LOWER;
+    else if (r < 66) return ZONE_MIDDLE;
     else return ZONE_UPPER;
   }
-  else if (horizonColorIndex >= 20 && horizonColorIndex <= 29) {
-    // Third quarter: 70% upper, 20% middle, 10% lower
-    int r = random(100);
-    if (r < 70) return ZONE_UPPER;
-    else if (r < 90) return ZONE_MIDDLE;
-    else return ZONE_LOWER;
-  }
-  else {  // 30-39
-    // Fourth quarter: evenly distributed
+  // Color 38+ is handled separately in triggerCloudPatchesForHorizonColor()
+  // with full-cloud coverage
+  else {
+    // Fallback: evenly distributed
     int r = random(100);
     if (r < 33) return ZONE_LOWER;
     else if (r < 66) return ZONE_MIDDLE;
@@ -849,8 +851,13 @@ void updateProgression() {
       phaseDuration = SUNRISE_HOLD_DURATION_MS;
       break;
     case SEQ_SUNRISE_PROG:
+      phaseDuration = bleControl.calculatedSunriseDuration;
+      break;
+    case SEQ_DAY_HOLD:
+      phaseDuration = bleControl.calculatedDaylightDuration;
+      break;
     case SEQ_SUNSET_PROG:
-      phaseDuration = PROGRESSION_DURATION_MS;
+      phaseDuration = bleControl.calculatedSunsetDuration;
       break;
     case SEQ_TEST_SUNRISE_HOLD:
       phaseDuration = TEST_HOLD_DURATION_MS;
@@ -878,8 +885,13 @@ void updateProgression() {
         return;  // Exit and let next loop iteration handle the new state
 
       case SEQ_SUNRISE_PROG:
-        Serial.println("Sunrise progression complete! Transitioning to DAY mode...");
-        transitionToSequence(SEQ_DAY);
+        Serial.println("Sunrise progression complete! Starting daylight hold...");
+        transitionToSequence(SEQ_DAY_HOLD);
+        return;  // Exit and let next loop iteration handle the new state
+
+      case SEQ_DAY_HOLD:
+        Serial.println("Daylight hold complete! Starting sunset progression...");
+        transitionToSequence(SEQ_SUNSET_PROG);
         return;  // Exit and let next loop iteration handle the new state
 
       case SEQ_TEST_SUNRISE_HOLD:
@@ -893,9 +905,9 @@ void updateProgression() {
         return;  // Exit and let next loop iteration handle the new state
 
       case SEQ_SUNSET_PROG:
-        Serial.println("Sunset progression complete! Ending at night blue...");
-        progState.isAnimating = false;
-        break;
+        Serial.println("Sunset progression complete! Transitioning to NIGHT mode...");
+        transitionToSequence(SEQ_NIGHT);
+        return;  // Exit and let next loop iteration handle the new state
 
       case SEQ_DAY:
         // DAY mode is static - set display and stop animating
@@ -1068,6 +1080,10 @@ void updateProgression() {
   } else if (progState.currentSequence == SEQ_SUNRISE_PROG || progState.currentSequence == SEQ_TEST_SUNRISE_PROG) {
     // Progress through palette based on percentage (0% → 100% = palette 0.0 → 38.0)
     palPos = percentToPalettePosition(progState.progressPercent);
+    c = interpolateColor(palPos);
+  } else if (progState.currentSequence == SEQ_DAY_HOLD) {
+    // Hold at full daylight (palette position 38.0)
+    palPos = 38.0;
     c = interpolateColor(palPos);
   } else if (progState.currentSequence == SEQ_SUNSET_PROG) {
     // Reverse progress through palette (0% → 100% = palette 38.0 → 0.0)
@@ -1836,14 +1852,19 @@ void handleModeControl(uint8_t* data, size_t length) {
             // Determine phase duration based on current state
             switch(progState.currentSequence) {
               case SEQ_SUNRISE_HOLD:
-                phaseDuration = bleControl.calculatedHoldDuration;
+                phaseDuration = SUNRISE_HOLD_DURATION_MS;
                 break;
               case SEQ_SUNRISE_PROG:
+                phaseDuration = bleControl.calculatedSunriseDuration;
+                break;
+              case SEQ_DAY_HOLD:
+                phaseDuration = bleControl.calculatedDaylightDuration;
+                break;
               case SEQ_SUNSET_PROG:
-                phaseDuration = bleControl.calculatedProgressDuration;
+                phaseDuration = bleControl.calculatedSunsetDuration;
                 break;
               default:
-                phaseDuration = bleControl.calculatedProgressDuration;
+                phaseDuration = bleControl.calculatedSunriseDuration;
                 break;
             }
 
@@ -1872,10 +1893,25 @@ void handleModeControl(uint8_t* data, size_t length) {
             bleControl.isPaused = false;
 
             // Restore phase start time accounting for paused duration
-            progState.phaseStartTime = millis() - (progState.progressPercent / 100.0 *
-                                                   (progState.currentSequence == SEQ_SUNRISE_HOLD ?
-                                                    bleControl.calculatedHoldDuration :
-                                                    bleControl.calculatedProgressDuration));
+            unsigned long phaseDuration;
+            switch(progState.currentSequence) {
+              case SEQ_SUNRISE_HOLD:
+                phaseDuration = SUNRISE_HOLD_DURATION_MS;
+                break;
+              case SEQ_SUNRISE_PROG:
+                phaseDuration = bleControl.calculatedSunriseDuration;
+                break;
+              case SEQ_DAY_HOLD:
+                phaseDuration = bleControl.calculatedDaylightDuration;
+                break;
+              case SEQ_SUNSET_PROG:
+                phaseDuration = bleControl.calculatedSunsetDuration;
+                break;
+              default:
+                phaseDuration = bleControl.calculatedSunriseDuration;
+                break;
+            }
+            progState.phaseStartTime = millis() - (progState.progressPercent / 100.0 * phaseDuration);
 
             // Resume animation
             progState.isAnimating = true;
@@ -1908,6 +1944,34 @@ void handleModeControl(uint8_t* data, size_t length) {
               cloud2State.patches[i].active = false;
               cloud3State.patches[i].active = false;
             }
+
+            // Actually display the night colors on LEDs
+            for(int i = 0; i < CLOUD_1_PIXELS; i++) {
+              cloud1.setPixelColor(i,
+                nightCloudColor.g * nightBrightness,
+                nightCloudColor.r * nightBrightness,
+                nightCloudColor.b * nightBrightness,
+                nightCloudColor.w * nightBrightness);
+            }
+            cloud1.show();
+
+            for(int i = 0; i < CLOUD_2_PIXELS; i++) {
+              cloud2.setPixelColor(i,
+                nightCloudColor.g * nightBrightness,
+                nightCloudColor.r * nightBrightness,
+                nightCloudColor.b * nightBrightness,
+                nightCloudColor.w * nightBrightness);
+            }
+            cloud2.show();
+
+            for(int i = 0; i < CLOUD_3_PIXELS; i++) {
+              cloud3.setPixelColor(i,
+                nightCloudColor.g * nightBrightness,
+                nightCloudColor.r * nightBrightness,
+                nightCloudColor.b * nightBrightness,
+                nightCloudColor.w * nightBrightness);
+            }
+            cloud3.show();
 
             transitionToSequence(SEQ_SUNRISE_HOLD);
           }
@@ -2077,51 +2141,64 @@ void handleModeControl(uint8_t* data, size_t length) {
 
 // Handle cycle configuration commands from BLE
 void handleCycleConfig(uint8_t* data, size_t length) {
-  if (length < 4) {
-    Serial.println("BLE: Error - Cycle config requires 4 bytes");
+  if (length < 6) {
+    Serial.println("BLE: Error - Cycle config requires 6 bytes");
     return;
   }
 
   // Parse little-endian uint16_t values
-  uint16_t cycleDurationMinutes = data[0] | (data[1] << 8);
-  uint16_t holdDurationMinutes = data[2] | (data[3] << 8);
+  uint16_t sunCycleDayDuration = data[0] | (data[1] << 8);
+  uint16_t sunriseDuration = data[2] | (data[3] << 8);
+  uint16_t sunsetDuration = data[4] | (data[5] << 8);
 
   Serial.println("========================================");
   Serial.println("BLE: Cycle configuration received");
-  Serial.print("  Total cycle duration: ");
-  Serial.print(cycleDurationMinutes);
+  Serial.print("  Sun Cycle Day Duration: ");
+  Serial.print(sunCycleDayDuration);
   Serial.println(" minutes");
-  Serial.print("  Hold duration: ");
-  Serial.print(holdDurationMinutes);
+  Serial.print("  Sunrise Duration: ");
+  Serial.print(sunriseDuration);
+  Serial.println(" minutes");
+  Serial.print("  Sunset Duration: ");
+  Serial.print(sunsetDuration);
   Serial.println(" minutes");
 
   // Validate values
-  if (holdDurationMinutes >= cycleDurationMinutes) {
-    Serial.println("BLE: Error - Hold duration must be less than cycle duration");
+  if (sunriseDuration + sunsetDuration >= sunCycleDayDuration) {
+    Serial.println("BLE: Error - Sunrise + Sunset duration must be less than total day duration");
     return;
   }
 
-  if (cycleDurationMinutes < 1 || cycleDurationMinutes > 1440) {  // Max 24 hours
-    Serial.println("BLE: Error - Cycle duration must be 1-1440 minutes");
+  if (sunCycleDayDuration < 3 || sunCycleDayDuration > 1440) {  // Min 3 min, Max 24 hours
+    Serial.println("BLE: Error - Sun Cycle Day Duration must be 3-1440 minutes");
+    return;
+  }
+
+  if (sunriseDuration < 1 || sunsetDuration < 1) {
+    Serial.println("BLE: Error - Sunrise and Sunset durations must be at least 1 minute");
     return;
   }
 
   // Store configuration
-  bleControl.cycleDurationMinutes = cycleDurationMinutes;
-  bleControl.holdDurationMinutes = holdDurationMinutes;
+  bleControl.sunCycleDayDurationMinutes = sunCycleDayDuration;
+  bleControl.sunriseDurationMinutes = sunriseDuration;
+  bleControl.sunsetDurationMinutes = sunsetDuration;
 
-  // Calculate progression duration (total - hold)
-  uint16_t progressionMinutes = cycleDurationMinutes - holdDurationMinutes;
-  bleControl.calculatedProgressDuration = (uint32_t)progressionMinutes * 60000UL;  // Convert to ms
-  bleControl.calculatedHoldDuration = (uint32_t)holdDurationMinutes * 60000UL;
+  // Calculate daylight duration (total - sunrise - sunset)
+  uint16_t daylightMinutes = sunCycleDayDuration - sunriseDuration - sunsetDuration;
+  bleControl.calculatedDaylightDuration = (uint32_t)daylightMinutes * 60000UL;  // Convert to ms
+  bleControl.calculatedSunriseDuration = (uint32_t)sunriseDuration * 60000UL;
+  bleControl.calculatedSunsetDuration = (uint32_t)sunsetDuration * 60000UL;
 
-  Serial.print("  Calculated progression duration: ");
-  Serial.print(progressionMinutes);
+  Serial.print("  Calculated Daylight Duration: ");
+  Serial.print(daylightMinutes);
   Serial.println(" minutes");
-  Serial.print("  Calculated hold duration (ms): ");
-  Serial.println(bleControl.calculatedHoldDuration);
-  Serial.print("  Calculated progression duration (ms): ");
-  Serial.println(bleControl.calculatedProgressDuration);
+  Serial.print("  Calculated Sunrise Duration (ms): ");
+  Serial.println(bleControl.calculatedSunriseDuration);
+  Serial.print("  Calculated Daylight Duration (ms): ");
+  Serial.println(bleControl.calculatedDaylightDuration);
+  Serial.print("  Calculated Sunset Duration (ms): ");
+  Serial.println(bleControl.calculatedSunsetDuration);
   Serial.println("========================================");
 }
 
@@ -2716,36 +2793,36 @@ void setup() {
   horizon.show();
 
   // Calculate cloud zone boundaries (divide each cloud into thirds)
-  // CLOUD_1: 32 pixels → lower: 0-10 (11px), middle: 11-21 (11px), upper: 22-31 (10px)
-  cloud1Zones.lowerStart = 0;
-  cloud1Zones.lowerEnd = 10;
+  // CLOUD_1: 32 pixels → lower: 22-31 (10px), middle: 11-21 (11px), upper: 0-10 (11px)
+  cloud1Zones.lowerStart = 22;
+  cloud1Zones.lowerEnd = 31;
   cloud1Zones.middleStart = 11;
   cloud1Zones.middleEnd = 21;
-  cloud1Zones.upperStart = 22;
-  cloud1Zones.upperEnd = 31;
+  cloud1Zones.upperStart = 0;
+  cloud1Zones.upperEnd = 10;
 
-  // CLOUD_2: 45 pixels → lower: 0-14 (15px), middle: 15-29 (15px), upper: 30-44 (15px)
-  cloud2Zones.lowerStart = 0;
-  cloud2Zones.lowerEnd = 14;
+  // CLOUD_2: 45 pixels → lower: 30-44 (15px), middle: 15-29 (15px), upper: 0-14 (15px)
+  cloud2Zones.lowerStart = 30;
+  cloud2Zones.lowerEnd = 44;
   cloud2Zones.middleStart = 15;
   cloud2Zones.middleEnd = 29;
-  cloud2Zones.upperStart = 30;
-  cloud2Zones.upperEnd = 44;
+  cloud2Zones.upperStart = 0;
+  cloud2Zones.upperEnd = 14;
 
-  // CLOUD_3: 46 pixels → lower: 0-15 (16px), middle: 16-30 (15px), upper: 31-45 (15px)
-  cloud3Zones.lowerStart = 0;
-  cloud3Zones.lowerEnd = 15;
+  // CLOUD_3: 46 pixels → lower: 31-45 (15px), middle: 16-30 (15px), upper: 0-15 (16px)
+  cloud3Zones.lowerStart = 31;
+  cloud3Zones.lowerEnd = 45;
   cloud3Zones.middleStart = 16;
   cloud3Zones.middleEnd = 30;
-  cloud3Zones.upperStart = 31;
-  cloud3Zones.upperEnd = 45;
+  cloud3Zones.upperStart = 0;
+  cloud3Zones.upperEnd = 15;
 
   Serial.println("Cloud zones calculated:");
-  Serial.print("  CLOUD_1: lower[0-10] middle[11-21] upper[22-31]");
+  Serial.print("  CLOUD_1: lower[22-31] middle[11-21] upper[0-10]");
   Serial.println();
-  Serial.print("  CLOUD_2: lower[0-14] middle[15-29] upper[30-44]");
+  Serial.print("  CLOUD_2: lower[30-44] middle[15-29] upper[0-14]");
   Serial.println();
-  Serial.print("  CLOUD_3: lower[0-15] middle[16-30] upper[31-45]");
+  Serial.print("  CLOUD_3: lower[31-45] middle[16-30] upper[0-15]");
   Serial.println();
 
   // Initialize cloud states
@@ -2916,8 +2993,8 @@ void loop() {
       progState.currentSequence == SEQ_STORM_CLEAR) {
     // Storm is active - update storm state machine
     updateStorm();
-  } else {
-    // Normal mode - update cloud patch animations
+  } else if (progState.currentSequence != SEQ_OFF) {
+    // Normal mode - update cloud patch animations (skip if OFF)
     updateCloudPatches(cloud1State, cloud1);
     updateCloudPatches(cloud2State, cloud2);
     updateCloudPatches(cloud3State, cloud3);
