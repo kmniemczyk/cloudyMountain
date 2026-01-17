@@ -113,7 +113,7 @@ typedef enum {
   SEQ_SUNSET_PROG,       // Sunset progression (configurable)
   SEQ_TEST_SUNRISE_HOLD, // Fast test hold (10sec)
   SEQ_TEST_SUNRISE_PROG, // Fast test progression (3min 50sec)
-  SEQ_STORM_DIM,         // Dimming clouds to 25% (60 seconds)
+  SEQ_STORM_DIM,       // Dimming clouds to 25% (60 seconds)
   SEQ_STORM_ACTIVE,      // Active lightning strikes (5-10 minutes)
   SEQ_STORM_CLEAR        // Returning to normal brightness (60 seconds)
 } SequenceState;
@@ -382,12 +382,12 @@ BLEControlState bleControl = {
   false,    // isPaused
   0,        // pausedTimeRemaining
   0,        // pauseStartTime
-  120,      // sunCycleDayDurationMinutes (2 hours default)
-  15,       // sunriseDurationMinutes (15 min default)
-  15,       // sunsetDurationMinutes (15 min default)
-  5400000,  // calculatedDaylightDuration (90 min = 2hr - 15min - 15min, in ms)
-  900000,   // calculatedSunriseDuration (15 min in ms)
-  900000,   // calculatedSunsetDuration (15 min in ms)
+  20,       // sunCycleDayDurationMinutes (20 min default: 10min sunrise + 10min sunset)
+  10,       // sunriseDurationMinutes (10 min default)
+  10,       // sunsetDurationMinutes (10 min default)
+  0,        // calculatedDaylightDuration (0 min - no hold, direct to DAY mode)
+  600000,   // calculatedSunriseDuration (10 min in ms)
+  600000,   // calculatedSunsetDuration (10 min in ms)
   false,    // scheduleEnabled
   6,        // scheduleHour (default 6 AM)
   0,        // scheduleMinute
@@ -1116,8 +1116,9 @@ void updateProgression() {
   }
 
   // Gradual cloud base color transition during sunrise/sunset progression
-  if (progState.currentSequence == SEQ_SUNRISE_PROG || progState.currentSequence == SEQ_TEST_SUNRISE_PROG ||
-      progState.currentSequence == SEQ_SUNSET_PROG) {
+  // Only start blending when progression reaches 80%
+  if ((progState.currentSequence == SEQ_SUNRISE_PROG || progState.currentSequence == SEQ_TEST_SUNRISE_PROG ||
+       progState.currentSequence == SEQ_SUNSET_PROG) && progState.progressPercent >= 80.0) {
 
     // Get target cloud base color based on current palette position
     ColorGRBW cloudBaseColor = getCloudPaletteColor((uint8_t)palPos);
@@ -3114,69 +3115,264 @@ void handleTouch(uint8_t pad) {
   // Add your touch handling logic here
   // Example: Light up different strands based on pad number
   switch(pad) {
-    case 0:  // Start full sunrise sequence (2min hold + 20min progression)
-      Serial.println("Starting full sunrise sequence (2min hold + 20min progression)");
-      transitionToSequence(SEQ_SUNRISE_HOLD);
-      break;
-    case 1:  // Fast 4-minute test sunrise (10sec hold + 3min 50sec progression)
-      Serial.println("Starting FAST TEST sunrise (10sec hold + 3min 50sec progression = 4min total)");
-      transitionToSequence(SEQ_TEST_SUNRISE_HOLD);
-      break;
-    case 2:  // Start sunset sequence (20min progression from day to night)
-      Serial.println("Starting sunset sequence (20min progression)");
-      transitionToSequence(SEQ_SUNSET_PROG);
-      break;
-    case 3:  // Jump directly to daytime mode
-      Serial.println("Jumping to DAY mode");
-      transitionToSequence(SEQ_DAY);
-      break;
-    case 4:  // RESET/OFF - Turn everything off and reset state
+    case 0:  // OFF mode
       {
-        Serial.println("RESET/OFF - Turning off all LEDs and stopping sequences");
+        Serial.println("========================================");
+        Serial.println("PAD 0 - OFF MODE");
+        Serial.println("Turning off all LEDs and stopping sequences");
+        Serial.println("========================================");
 
-        // Stop any running sequences
-        progState.isAnimating = false;
+        // Stop any active sequences
         progState.currentSequence = SEQ_OFF;
-        progState.progressPercent = 0.0;
+        progState.isAnimating = false;
 
-        // Clear storm state
-        stormState.lightningFlashStartTime = 0;
-        stormState.nextLightningTime = 0;
+        // Clear all cloud state arrays (set to black)
+        ColorGRBW blackColor = {0, 0, 0, 0};
+        for(int i = 0; i < CLOUD_1_PIXELS; i++) {
+          cloud1State.currentPixelColors[i] = blackColor;
+        }
+        for(int i = 0; i < CLOUD_2_PIXELS; i++) {
+          cloud2State.currentPixelColors[i] = blackColor;
+        }
+        for(int i = 0; i < CLOUD_3_PIXELS; i++) {
+          cloud3State.currentPixelColors[i] = blackColor;
+        }
 
-        // HARD RESET: Clear all cloud patches and reset to starting state
-        Serial.println("Clearing all cloud patches...");
-
-        // Deactivate all patches on all clouds
-        for (int i = 0; i < MAX_PATCHES_PER_CLOUD; i++) {
+        // Deactivate all cloud patches
+        for(int i = 0; i < MAX_PATCHES_PER_CLOUD; i++) {
           cloud1State.patches[i].active = false;
           cloud2State.patches[i].active = false;
           cloud3State.patches[i].active = false;
         }
 
-        // Reset all cloud pixels to starting deep blue (cloud color 0)
-        ColorGRBW startColor = getCloudPaletteColor(0);
-        for (int i = 0; i < CLOUD_1_PIXELS; i++) {
-          cloud1State.currentPixelColors[i] = startColor;
-        }
-        for (int i = 0; i < CLOUD_2_PIXELS; i++) {
-          cloud2State.currentPixelColors[i] = startColor;
-        }
-        for (int i = 0; i < CLOUD_3_PIXELS; i++) {
-          cloud3State.currentPixelColors[i] = startColor;
-        }
-
         // Turn off all LED strands
-        setStrandColor(cloud1, 0, 0, 0, 0);
-        setStrandColor(cloud2, 0, 0, 0, 0);
-        setStrandColor(cloud3, 0, 0, 0, 0);
-        setStrandColor(horizon, 0, 0, 0, 0);
+        for(int i = 0; i < HORIZON_PIXELS; i++) {
+          horizon.setPixelColor(i, 0, 0, 0, 0);
+        }
+        horizon.show();
 
-        Serial.println("All LEDs off, all patches cleared, cloud states reset to deep blue");
+        for(int i = 0; i < CLOUD_1_PIXELS; i++) {
+          cloud1.setPixelColor(i, 0, 0, 0, 0);
+        }
+        cloud1.show();
+
+        for(int i = 0; i < CLOUD_2_PIXELS; i++) {
+          cloud2.setPixelColor(i, 0, 0, 0, 0);
+        }
+        cloud2.show();
+
+        for(int i = 0; i < CLOUD_3_PIXELS; i++) {
+          cloud3.setPixelColor(i, 0, 0, 0, 0);
+        }
+        cloud3.show();
+
+        Serial.println("All LEDs OFF");
       }
       break;
-    case 5:  // Storm test mode (fast timing)
-      Serial.println("Starting TEST STORM (fast timing)");
-      startStorm(true);  // true = test mode
+    case 1:  // Toggle between DAY and NIGHT mode
+      {
+        static bool isDayMode = true;  // Track current state
+
+        if (isDayMode) {
+          // Switch to NIGHT mode
+          Serial.println("========================================");
+          Serial.println("PAD 1 - Switching to NIGHT mode");
+          Serial.println("========================================");
+
+          progState.currentSequence = SEQ_NIGHT;
+          progState.isAnimating = false;
+
+          // Set horizon to night blue (palette color 0) at low brightness (12.5%)
+          ColorGRBW nightHorizonColor = getPaletteColor(0);
+          float nightBrightness = BRIGHTNESS_MIN_FACTOR;
+
+          for(int i = 0; i < HORIZON_PIXELS; i++) {
+            horizon.setPixelColor(i, horizon.Color(
+              nightHorizonColor.r * nightBrightness,
+              nightHorizonColor.g * nightBrightness,
+              nightHorizonColor.b * nightBrightness,
+              nightHorizonColor.w * nightBrightness
+            ));
+          }
+          horizon.show();
+
+          // Set clouds to night color
+          ColorGRBW nightCloudColor = getCloudPaletteColor(0);
+
+          for(int i = 0; i < CLOUD_1_PIXELS; i++) {
+            cloud1State.currentPixelColors[i] = nightCloudColor;
+            cloud1.setPixelColor(i, cloud1.Color(
+              nightCloudColor.r * nightBrightness,
+              nightCloudColor.g * nightBrightness,
+              nightCloudColor.b * nightBrightness,
+              nightCloudColor.w * nightBrightness
+            ));
+          }
+          cloud1.show();
+
+          for(int i = 0; i < CLOUD_2_PIXELS; i++) {
+            cloud2State.currentPixelColors[i] = nightCloudColor;
+            cloud2.setPixelColor(i, cloud2.Color(
+              nightCloudColor.r * nightBrightness,
+              nightCloudColor.g * nightBrightness,
+              nightCloudColor.b * nightBrightness,
+              nightCloudColor.w * nightBrightness
+            ));
+          }
+          cloud2.show();
+
+          for(int i = 0; i < CLOUD_3_PIXELS; i++) {
+            cloud3State.currentPixelColors[i] = nightCloudColor;
+            cloud3.setPixelColor(i, cloud3.Color(
+              nightCloudColor.r * nightBrightness,
+              nightCloudColor.g * nightBrightness,
+              nightCloudColor.b * nightBrightness,
+              nightCloudColor.w * nightBrightness
+            ));
+          }
+          cloud3.show();
+
+          // Deactivate all cloud patches
+          for(int i = 0; i < MAX_PATCHES_PER_CLOUD; i++) {
+            cloud1State.patches[i].active = false;
+            cloud2State.patches[i].active = false;
+            cloud3State.patches[i].active = false;
+          }
+
+          isDayMode = false;
+        } else {
+          // Switch to DAY mode
+          Serial.println("========================================");
+          Serial.println("PAD 1 - Switching to DAY mode");
+          Serial.println("========================================");
+
+          transitionToSequence(SEQ_DAY);
+          isDayMode = true;
+        }
+      }
+      break;
+    case 2:  // Toggle storm on/off
+      {
+        stormState.stormEnabled = !stormState.stormEnabled;
+        Serial.println("========================================");
+        Serial.print("PAD 2 - Storm auto-trigger: ");
+        Serial.println(stormState.stormEnabled ? "ENABLED" : "DISABLED");
+        Serial.println("========================================");
+        if (stormState.stormEnabled) {
+          stormState.lastStormCheckTime = millis();
+        }
+      }
+      break;
+    case 3:  // Default cycle (sunrise sequence)
+      {
+        Serial.println("========================================");
+        Serial.println("PAD 3 - Starting default cycle (sunrise sequence)");
+        Serial.println("========================================");
+
+        // Reset clouds to night colors before starting cycle
+        ColorGRBW nightCloudColor = getCloudPaletteColor(0);
+        float nightBrightness = BRIGHTNESS_MIN_FACTOR;
+
+        // Update cloud state arrays to night colors
+        for(int i = 0; i < CLOUD_1_PIXELS; i++) {
+          cloud1State.currentPixelColors[i] = nightCloudColor;
+        }
+        for(int i = 0; i < CLOUD_2_PIXELS; i++) {
+          cloud2State.currentPixelColors[i] = nightCloudColor;
+        }
+        for(int i = 0; i < CLOUD_3_PIXELS; i++) {
+          cloud3State.currentPixelColors[i] = nightCloudColor;
+        }
+
+        // Deactivate any active cloud patches
+        for(int i = 0; i < MAX_PATCHES_PER_CLOUD; i++) {
+          cloud1State.patches[i].active = false;
+          cloud2State.patches[i].active = false;
+          cloud3State.patches[i].active = false;
+        }
+
+        // Display the night colors on LEDs
+        for(int i = 0; i < CLOUD_1_PIXELS; i++) {
+          cloud1.setPixelColor(i,
+            nightCloudColor.g * nightBrightness,
+            nightCloudColor.r * nightBrightness,
+            nightCloudColor.b * nightBrightness,
+            nightCloudColor.w * nightBrightness);
+        }
+        cloud1.show();
+
+        for(int i = 0; i < CLOUD_2_PIXELS; i++) {
+          cloud2.setPixelColor(i,
+            nightCloudColor.g * nightBrightness,
+            nightCloudColor.r * nightBrightness,
+            nightCloudColor.b * nightBrightness,
+            nightCloudColor.w * nightBrightness);
+        }
+        cloud2.show();
+
+        for(int i = 0; i < CLOUD_3_PIXELS; i++) {
+          cloud3.setPixelColor(i,
+            nightCloudColor.g * nightBrightness,
+            nightCloudColor.r * nightBrightness,
+            nightCloudColor.b * nightBrightness,
+            nightCloudColor.w * nightBrightness);
+        }
+        cloud3.show();
+
+        transitionToSequence(SEQ_SUNRISE_HOLD);
+      }
+      break;
+    case 4:  // Disabled
+      Serial.println("PAD 4 - Disabled");
+      break;
+    case 5:  // SCHEDULE STATUS - Display current time and schedule status
+      {
+        Serial.println("========================================");
+        Serial.println("PAD 5 - SCHEDULE STATUS");
+
+        if (!timeSync.synchronized) {
+          Serial.println("Time: NOT SYNCHRONIZED");
+        } else {
+          int32_t currentSeconds = getCurrentTimeOfDay();
+          int8_t currentDay = getCurrentDayOfWeek();
+
+          Serial.print("Current time: ");
+          Serial.print(currentSeconds / 3600);
+          Serial.print(":");
+          int mins = (currentSeconds % 3600) / 60;
+          if (mins < 10) Serial.print("0");
+          Serial.print(mins);
+          Serial.print(":");
+          int secs = currentSeconds % 60;
+          if (secs < 10) Serial.print("0");
+          Serial.println(secs);
+
+          const char* dayNames[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+          Serial.print("Day: ");
+          Serial.println(dayNames[currentDay]);
+        }
+
+        Serial.println();
+        Serial.print("Schedule enabled: ");
+        Serial.println(bleControl.scheduleEnabled ? "YES" : "NO");
+
+        if (bleControl.scheduleEnabled) {
+          Serial.print("Scheduled time: ");
+          if (bleControl.scheduleHour < 10) Serial.print("0");
+          Serial.print(bleControl.scheduleHour);
+          Serial.print(":");
+          if (bleControl.scheduleMinute < 10) Serial.print("0");
+          Serial.println(bleControl.scheduleMinute);
+
+          Serial.print("Waiting for start: ");
+          Serial.println(bleControl.waitingForScheduledStart ? "YES" : "NO");
+
+          Serial.print("Night after sunset: ");
+          Serial.println(bleControl.enableNightAfterSunset ? "YES" : "NO");
+        }
+
+        Serial.println("========================================");
+      }
       break;
     case 6:  // Custom color test - set via serial input
       Serial.println("========================================");
@@ -3244,154 +3440,17 @@ void handleTouch(uint8_t pad) {
         }
       }
       break;
-    case 8:  // Toggle storm auto-triggering
-      stormState.stormEnabled = !stormState.stormEnabled;
-      Serial.println("========================================");
-      Serial.print("Storm auto-trigger: ");
-      Serial.println(stormState.stormEnabled ? "ENABLED" : "DISABLED");
-      Serial.println("========================================");
-      if (stormState.stormEnabled) {
-        stormState.lastStormCheckTime = millis();
-      }
+    case 8:  // Disabled
+      Serial.println("PAD 8 - Disabled");
       break;
-    case 9:  // TIME SYNC TEST - Simulate time sync from BLE
-      {
-        // Test scenario: Sync to current day at 6:00 AM
-        // This allows testing scheduled start at 6:00 AM + offset seconds
-        Serial.println("========================================");
-        Serial.println("PAD 9 - TIME SYNC TEST");
-        Serial.println("Simulating BLE time sync command");
-
-        // Get current millis as base
-        unsigned long currentMillis = millis();
-
-        // Create a test timestamp for 6:00 AM today (21600 seconds = 6 hours)
-        // We'll use the current day and set time to just before 6:00 AM
-        // so we can trigger a scheduled event by pressing pad 10
-        uint32_t testTimestamp = 1704441600;  // Example: Jan 5, 2024, 6:00:00 AM UTC
-        uint8_t testDayOfWeek = 4;  // Thursday
-
-        // Manually build the BLE command (6 bytes)
-        uint8_t timeSyncData[6];
-        timeSyncData[0] = testTimestamp & 0xFF;
-        timeSyncData[1] = (testTimestamp >> 8) & 0xFF;
-        timeSyncData[2] = (testTimestamp >> 16) & 0xFF;
-        timeSyncData[3] = (testTimestamp >> 24) & 0xFF;
-        timeSyncData[4] = testDayOfWeek;
-        timeSyncData[5] = 0x00;  // Reserved
-
-        // Call the BLE handler
-        handleTimeSync(timeSyncData, 6);
-
-        Serial.println("Time sync test complete. Use pad 10 to test scheduling.");
-        Serial.println("========================================");
-      }
+    case 9:  // Disabled
+      Serial.println("PAD 9 - Disabled");
       break;
-    case 10:  // SCHEDULE TEST - Set up test schedule and display status
-      {
-        Serial.println("========================================");
-        Serial.println("PAD 10 - SCHEDULE TEST");
-        Serial.println("Setting test schedule for 30 seconds from now");
-
-        // Calculate target time (30 seconds from now)
-        int32_t currentSeconds = getCurrentTimeOfDay();
-        if (currentSeconds < 0) {
-          Serial.println("ERROR: Time not synchronized! Press pad 9 first.");
-          Serial.println("========================================");
-          break;
-        }
-
-        int32_t targetSeconds = currentSeconds + 30;  // 30 seconds from now
-        if (targetSeconds >= 86400) targetSeconds -= 86400;  // Wrap at midnight
-
-        uint8_t targetHour = targetSeconds / 3600;
-        uint8_t targetMinute = (targetSeconds % 3600) / 60;
-
-        // Get current day
-        int8_t currentDay = getCurrentDayOfWeek();
-        uint8_t dayMask = (1 << currentDay);  // Today only
-
-        // Build schedule config BLE command (5 bytes)
-        uint8_t scheduleData[5];
-        scheduleData[0] = 0x01;  // Enabled
-        scheduleData[1] = targetHour;
-        scheduleData[2] = targetMinute;
-        scheduleData[3] = dayMask;
-        scheduleData[4] = 0x00;  // No night after sunset
-
-        // Call the BLE handler
-        handleScheduleConfig(scheduleData, 5);
-
-        Serial.println();
-        Serial.println("TEST SCHEDULE STATUS:");
-        Serial.print("  Current time: ");
-        Serial.print(getCurrentTimeOfDay() / 3600);
-        Serial.print(":");
-        Serial.print((getCurrentTimeOfDay() % 3600) / 60);
-        Serial.print(":");
-        Serial.println(getCurrentTimeOfDay() % 60);
-
-        Serial.print("  Scheduled time: ");
-        if (targetHour < 10) Serial.print("0");
-        Serial.print(targetHour);
-        Serial.print(":");
-        if (targetMinute < 10) Serial.print("0");
-        Serial.println(targetMinute);
-
-        Serial.println();
-        Serial.println("Wait 30 seconds for scheduled sunrise to start...");
-        Serial.println("========================================");
-      }
+    case 10:  // Disabled
+      Serial.println("PAD 10 - Disabled");
       break;
-    case 11:  // SCHEDULE STATUS - Display current time and schedule status
-      {
-        Serial.println("========================================");
-        Serial.println("PAD 11 - SCHEDULE STATUS");
-
-        if (!timeSync.synchronized) {
-          Serial.println("Time: NOT SYNCHRONIZED");
-          Serial.println("Press pad 9 to sync time");
-        } else {
-          int32_t currentSeconds = getCurrentTimeOfDay();
-          int8_t currentDay = getCurrentDayOfWeek();
-
-          Serial.print("Current time: ");
-          Serial.print(currentSeconds / 3600);
-          Serial.print(":");
-          int mins = (currentSeconds % 3600) / 60;
-          if (mins < 10) Serial.print("0");
-          Serial.print(mins);
-          Serial.print(":");
-          int secs = currentSeconds % 60;
-          if (secs < 10) Serial.print("0");
-          Serial.println(secs);
-
-          const char* dayNames[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
-          Serial.print("Day: ");
-          Serial.println(dayNames[currentDay]);
-        }
-
-        Serial.println();
-        Serial.print("Schedule enabled: ");
-        Serial.println(bleControl.scheduleEnabled ? "YES" : "NO");
-
-        if (bleControl.scheduleEnabled) {
-          Serial.print("Scheduled time: ");
-          if (bleControl.scheduleHour < 10) Serial.print("0");
-          Serial.print(bleControl.scheduleHour);
-          Serial.print(":");
-          if (bleControl.scheduleMinute < 10) Serial.print("0");
-          Serial.println(bleControl.scheduleMinute);
-
-          Serial.print("Waiting for start: ");
-          Serial.println(bleControl.waitingForScheduledStart ? "YES" : "NO");
-
-          Serial.print("Night after sunset: ");
-          Serial.println(bleControl.enableNightAfterSunset ? "YES" : "NO");
-        }
-
-        Serial.println("========================================");
-      }
+    case 11:  // Disabled
+      Serial.println("PAD 11 - Disabled");
       break;
     default:
       // Handle other pads
